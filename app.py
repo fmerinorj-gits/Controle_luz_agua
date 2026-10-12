@@ -36,7 +36,7 @@ def calcular_centena_agua(leitura_input: float, ultima_leitura_total: float) -> 
 
 menu = st.sidebar.radio(
     "Navegação",
-    ["Registro Rápido", "Visão Geral", "Frente", "100", "Fundos", "Água"]
+    ["Registro Rápido", "Visão Geral", "Frente", "100", "Fundos", "Água", "Configuração de Ciclo"]
 )
 
 if menu == "Registro Rápido":
@@ -102,6 +102,7 @@ elif menu == "Água":
 
 elif menu == "Visão Geral":
     st.title("📊 Resumo do Ciclo")
+    st.caption("Período atual: 18/09/2026 a 18/10/2026") # Aqui entrará a Célula C1 no futuro
     
     # Tabela com as previsões de R$ e a soma de 100 + Fundos
     st.markdown("""
@@ -113,3 +114,21 @@ elif menu == "Visão Geral":
     | **100 + Fundos** | **237 kWh** | **485 kWh** | **R$ 445,00** |
     | **Água** | 7.011 m³ | 13.146 m³ | - |
     """)
+
+elif menu == "Configuração de Ciclo":
+    st.title("⚙️ Configuração do Mês")
+    st.info("Atualize estes dados 1x por mês, quando a fatura oficial fechar.")
+    
+    with st.form("form_config"):
+        c1, c2 = st.columns(2)
+        with c1:
+            st.date_input("Início do Ciclo (Última Leitura)", value=None)
+        with c2:
+            st.date_input("Fim do Ciclo (Próxima Leitura)", value=None)
+            
+        st.subheader("Taxas (R$)")
+        st.number_input("TUSD", value=None)
+        st.number_input("TE", value=None)
+        st.number_input("Iluminação Pública", value=None)
+        
+        st.form_submit_button("Salvar Configurações de Ciclo", use_container_width=True)
