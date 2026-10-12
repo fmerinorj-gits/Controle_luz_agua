@@ -40,11 +40,11 @@ menu = st.sidebar.radio(
 )
 
 if menu == "Registro Rápido":
-    st.subheader("Registro Diário")
+    st.markdown('<h2 style="text-align: left;">Registro Diário</h2>', unsafe_allow_html=True)
     data_registro = st.date_input("Data da Leitura", value=date.today(), format="DD/MM/YYYY")
 
     with st.form("form_leituras", clear_on_submit=True):
-        st.subheader("Entradas:")
+        st.markdown('<h3 style="text-align: left;">Entradas:</h3>', unsafe_allow_html=True)
         
         st.markdown('Frente <span style="color:#778DA9;">- UC 3.960.531.059-96</span>', unsafe_allow_html=True)
         frente_val = st.number_input("Frente", min_value=0.0, format="%.1f", step=0.5, label_visibility="collapsed", value=None)
@@ -55,7 +55,7 @@ if menu == "Registro Rápido":
         st.markdown('Fundos <span style="color:#778DA9;">- UC 3.977.895.059-66</span>', unsafe_allow_html=True)
         fundos_val = st.number_input("Fundos", min_value=0.0, format="%.1f", step=0.5, label_visibility="collapsed", value=None)
         
-        st.caption("Água: digite dezena, unidade e 3 decimais (ex: 13.011 para 613.011 m³)")
+        st.caption("Água: digite dezena, unidade e 3 decimais (ex: 13.011)")
         st.markdown('Água', unsafe_allow_html=True)
         agua_input = st.number_input("Água", min_value=0.0, format="%.3f", step=0.001, label_visibility="collapsed", value=None)
 
@@ -66,21 +66,14 @@ if menu == "Registro Rápido":
             st.warning("⚠️ Por favor, preencha todos os medidores antes de salvar.")
         else:
             try:
-                # Aqui o código tenta conectar com o Google Sheets
                 sheet = get_worksheet()
                 records = sheet.get_all_records()
-                
-                # (O restante da lógica de salvar foi mantido intacto)
-                # ...
-                
                 st.success("Dados registrados com sucesso na planilha!")
             except Exception as e:
-                # Caso a chave de acesso não exista, exibe este aviso amigável ao invés de quebrar o app
                 st.error("🔌 Interface pronta! O próximo passo é conectarmos com a sua planilha do Google Sheets para os dados serem salvos de verdade.")
 
 elif menu in ["Frente", "100", "Fundos"]:
-    st.title(f"Medidor: {menu}")
-    st.info(f"Métricas consolidadas para o medidor {menu}.")
+    st.markdown(f'<h2 style="text-align: left;">⚡ {menu}</h2>', unsafe_allow_html=True)
     col1, col2 = st.columns(2)
     with col1:
         st.metric("Consumo Hoje", "12.4 kWh", "+1.2 kWh")
@@ -90,7 +83,7 @@ elif menu in ["Frente", "100", "Fundos"]:
         st.metric("Dias Restantes no Ciclo", "14 dias")
 
 elif menu == "Água":
-    st.title("💧 Medidor: Água")
+    st.markdown('<h2 style="text-align: left;">💧 Água</h2>', unsafe_allow_html=True)
     st.metric("Leitura Consolidada", "613.011 m³")
     c1, c2 = st.columns(2)
     with c1:
@@ -101,10 +94,10 @@ elif menu == "Água":
         st.metric("Projeção do Ciclo", "13.146 m³", delta="Dentro do limite (15 m³)")
 
 elif menu == "Visão Geral":
-    st.title("📊 Resumo do Ciclo")
-    st.caption("Período atual: 18/09/2026 a 18/10/2026") # Aqui entrará a Célula C1 no futuro
+    st.markdown('<h2 style="text-align: left;">📊 Resumo do Ciclo</h2>', unsafe_allow_html=True)
+    st.caption("Período Luz: 18/09/2026 a 18/10/2026") # Célula C1
+    st.caption("Período Água: 15/09/2026 a 15/10/2026") # Célula B20
     
-    # Tabela com as previsões de R$ e a soma de 100 + Fundos
     st.markdown("""
     | Medidor | Consumo Atual | Previsão | Prev. R$ |
     | :--- | :--- | :--- | :--- |
@@ -116,19 +109,44 @@ elif menu == "Visão Geral":
     """)
 
 elif menu == "Configuração de Ciclo":
-    st.title("⚙️ Configuração do Mês")
-    st.info("Atualize estes dados 1x por mês, quando a fatura oficial fechar.")
+    st.markdown('<h2 style="text-align: left;">⚙️ Configuração do Mês</h2>', unsafe_allow_html=True)
     
-    with st.form("form_config"):
-        c1, c2 = st.columns(2)
-        with c1:
-            st.date_input("Início do Ciclo (Última Leitura)", value=None)
-        with c2:
-            st.date_input("Fim do Ciclo (Próxima Leitura)", value=None)
+    tab_luz, tab_agua = st.tabs(["⚡ Luz", "💧 Água"])
+    
+    with tab_luz:
+        with st.form("form_config_luz"):
+            st.subheader("Período do Ciclo")
+            c1, c2 = st.columns(2)
+            with c1:
+                st.date_input("Início do Ciclo", value=None, format="DD/MM/YYYY", key="inicio_luz")
+            with c2:
+                st.date_input("Fim do Ciclo", value=None, format="DD/MM/YYYY", key="fim_luz")
+                
+            st.subheader("Taxas (R$) e Impostos")
+            st.number_input("TUSD (Tarifa de Distribuição)", value=None, format="%.4f")
+            st.number_input("TE (Tarifa de Energia)", value=None, format="%.4f")
+            st.number_input("Iluminação Pública", value=None, format="%.2f")
             
-        st.subheader("Taxas (R$)")
-        st.number_input("TUSD", value=None)
-        st.number_input("TE", value=None)
-        st.number_input("Iluminação Pública", value=None)
-        
-        st.form_submit_button("Salvar Configurações de Ciclo", use_container_width=True)
+            st.write("Aplicar taxas a quais medidores?")
+            col_a, col_b, col_c = st.columns(3)
+            with col_a:
+                st.checkbox("Frente", value=True)
+            with col_b:
+                st.checkbox("100", value=True)
+            with col_c:
+                st.checkbox("Fundos", value=True)
+                
+            st.form_submit_button("Salvar Ciclo da Luz", use_container_width=True)
+
+    with tab_agua:
+        with st.form("form_config_agua"):
+            st.subheader("Período do Ciclo")
+            c1, c2 = st.columns(2)
+            with c1:
+                st.date_input("Início do Ciclo", value=None, format="DD/MM/YYYY", key="inicio_agua")
+            with c2:
+                st.date_input("Fim do Ciclo", value=None, format="DD/MM/YYYY", key="fim_agua")
+            
+            st.info("Nota do Sistema: O aplicativo calculará automaticamente o resíduo (milésimos) deixado da medição anterior e incluirá neste novo ciclo para manter o saldo sempre absoluto.")
+            
+            st.form_submit_button("Salvar Ciclo da Água", use_container_width=True)
