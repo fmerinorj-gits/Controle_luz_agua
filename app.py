@@ -39,47 +39,6 @@ menu = st.sidebar.radio(
     ["Registro Rápido", "Frente", "100", "Fundos", "Água", "Visão Geral"]
 )
 
-import streamlit as st
-import pandas as pd
-from datetime import datetime, date
-import gspread
-from google.oauth2.service_account import Credentials
-
-st.set_page_config(page_title="Controle Luz & Água", layout="centered", initial_sidebar_state="collapsed")
-
-def get_gspread_client():
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive"
-    ]
-    creds_dict = dict(st.secrets["gcp_service_account"])
-    credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-    return gspread.authorize(credentials)
-
-def get_worksheet():
-    client = get_gspread_client()
-    spreadsheet = client.open("Controle Luz 2026")
-    current_sheet_name = datetime.now().strftime("%m/%Y")
-    try:
-        sheet = spreadsheet.worksheet(current_sheet_name)
-    except gspread.WorksheetNotFound:
-        sheet = spreadsheet.get_worksheet(0)
-    return sheet
-
-def calcular_centena_agua(leitura_input: float, ultima_leitura_total: float) -> float:
-    if ultima_leitura_total <= 0:
-        return leitura_input
-    centena_base = int(ultima_leitura_total // 100) * 100
-    resto_anterior = ultima_leitura_total % 100
-    if (leitura_input % 100) < resto_anterior and (resto_anterior - (leitura_input % 100)) > 50:
-        centena_base += 100
-    return round(centena_base + leitura_input, 3)
-
-menu = st.sidebar.radio(
-    "Navegação",
-    ["Registro Rápido", "Frente", "100", "Fundos", "Água", "Visão Geral"]
-)
-
 if menu == "Registro Rápido":
     st.subheader("Registro Diário")
     data_registro = st.date_input("Data da Leitura", value=date.today())
