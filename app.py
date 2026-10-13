@@ -17,61 +17,77 @@ def get_gspread_client():
     credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     return gspread.authorize(credentials)
 
-def get_worksheet():
+def get_spreadsheet():
     client = get_gspread_client()
-    spreadsheet = client.open("Controle Luz 2026")
-    current_sheet_name = datetime.now().strftime("%m/%Y")
+    return client.open("Controle Luz 2026")
+
+def get_worksheet_mes():
+    spreadsheet = get_spreadsheet()
+    mes_ano = datetime.now().strftime("%m %Y")
     try:
-        sheet = spreadsheet.worksheet(current_sheet_name)
+        sheet = spreadsheet.worksheet(mes_ano)
     except gspread.WorksheetNotFound:
-        # Se não achar a aba do mês, pega a primeira aba existente
-        sheet = spreadsheet.get_worksheet(0)
+        # Se não existe, cria a aba do mês com cabeçalhos
+        sheet = spreadsheet.add_worksheet(title=mes_ano, rows="100", cols="10")
+        sheet.append_row(["Data", "Frente", "100", "Fundos", "Agua"])
     return sheet
 
-# --- LÓGICA DE DADOS (CÉREBRO) ---
-# Aqui tentamos puxar os dados reais da planilha
-try:
-    planilha = get_worksheet()
-    # Puxa todos os dados. Como sua planilha tem formatações complexas (G4, C1), 
-    # se isso falhar, os dados ficam zerados aguardando mapeamento exato.
-    dados = planilha.get_all_records()
-    df = pd.DataFrame(dados)
-except Exception as e:
-    df = pd.DataFrame()
+def get_worksheet_config():
+    spreadsheet = get_spreadsheet()
+    try:
+        sheet = spreadsheet.worksheet("Configuracoes")
+    except gspread.WorksheetNotFound:
+        sheet = spreadsheet.add_worksheet(title="Configuracoes", rows="50", cols="2")
+        sheet.append_row(["Chave", "Valor"])
+    return sheet
 
-# Variáveis que substituirão os dados fictícios
+# --- LÓGICA DE DADOS MATEMÁTICOS ---
+def calcular_leitura_absoluta(leitura_input, ultima_leitura_absoluta):
+    # Se a última leitura for 0 ou vazia, assume o que o usuário digitou como inicial
+    if ultima_leitura_absoluta == 0 or pd.isna(ultima_leitura_absoluta):
+        return leitura_input
+    
+    # Isola a base centesimal (ex: 123495 vira 123400)
+    base = int(ultima_leitura_absoluta // 100) * 100
+    resto = ultima_leitura_absoluta % 100
+    
+    # Se a leitura anterior estava no fim da centena (ex: 95) e a nova é baixa (ex: 02)
+    if resto > 50 and leitura_input < 50:
+        base += 100
+        
+    return base + leitura_input
+
+# --- CARREGANDO DADOS ---
+try:
+    planilha_mes = get_worksheet_mes()
+    dados_mes = planilha_mes.get_all_records()
+    df_mes = pd.DataFrame(dados_mes)
+except Exception:
+    df_mes = pd.DataFrame()
+
+# Pegando as últimas leituras para base de cálculo
+ultima_frente = float(df_mes['Frente'].iloc[-1]) if not df_mes.empty and 'Frente' in df_mes.columns else 0.0
+ultima_cem = float(df_mes['100'].iloc[-1]) if not df_mes.empty and '100' in df_mes.columns else 0.0
+ultima_fundos = float(df_mes['Fundos'].iloc[-1]) if not df_mes.empty and 'Fundos' in df_mes.columns else 0.0
+ultima_agua = float(df_mes['Agua'].iloc[-1]) if not df_mes.empty and 'Agua' in df_mes.columns else 0.0
+
+# Variáveis (substituindo futuramente pelas configs)
 meta_ideal_luz_mes = 150.0
-dias_no_ciclo = 30 # Isso será calculado futuramente com as datas
+dias_no_ciclo = 30 
 meta_ideal_diaria = meta_ideal_luz_mes / dias_no_ciclo
 
-# Inicializando valores reais zerados (até mapearmos sua planilha 100%)
-# Frente
-consumo_hoje_frente = 0.0
-previsao_frente = 0.0
-# 100
-consumo_hoje_cem = 0.0
-previsao_cem = 0.0
-# Fundos
-consumo_hoje_fundos = 0.0
-previsao_fundos = 0.0
-# Água
-consumo_ciclo_agua = 0.0
-projecao_agua = 0.0
-meta_maxima_agua = 15.0
-
 # --- INTERFACE ---
-menu = st.sidebar.radio(
+menu = st.sidebar.selectbox(
     "Navegação",
     ["Registro Rápido", "Visão Geral", "Frente", "100", "Fundos", "Água", "Configuração de Ciclo"]
 )
 
 if menu == "Registro Rápido":
-    st.markdown('<h2 style="text-align: left;">Registro Diário</h2>', unsafe_allow_html=True)
+    st.markdown('<h2 style="margin-bottom: 0px;">Registro Diário</h2>', unsafe_allow_html=True)
     data_registro = st.date_input("Data da Leitura", value=date.today(), format="DD/MM/YYYY")
 
     with st.form("form_leituras", clear_on_submit=True):
-        st.markdown('<h3 style="text-align: left;">Entradas:</h3>', unsafe_allow_html=True)
-        
+        st.markdown('<h3>Entradas:</h3>', unsafe_allow_html=True)
         st.caption("Luz: digite dezena, unidade e 2 decimais (ex: 25.03)")
         
         st.markdown('Frente <span style="color:#778DA9;">- UC 3.960.531.059-96</span>', unsafe_allow_html=True)
@@ -87,54 +103,62 @@ if menu == "Registro Rápido":
         st.markdown('Água', unsafe_allow_html=True)
         agua_input = st.number_input("Água", min_value=0.0, format="%.3f", step=0.001, label_visibility="collapsed", value=None)
 
-        submitted = st.form_submit_button("Salvar Leituras", use_container_width=True)
+        submitted = st.form_submit_button("Salvar Inteligente", use_container_width=True)
 
     if submitted:
         if None in [frente_val, cem_val, fundos_val, agua_input]:
             st.warning("⚠️ Por favor, preencha todos os medidores antes de salvar.")
         else:
             try:
-                # LÓGICA REAL DE SALVAMENTO (Vai escrever na primeira linha vazia da planilha)
-                nova_linha = [
-                    data_registro.strftime("%d/%m/%Y"), 
-                    frente_val, 
-                    cem_val, 
-                    fundos_val, 
-                    agua_input
-                ]
-                planilha.append_row(nova_linha, value_input_option="USER_ENTERED")
-                st.success("✅ Dados registrados com sucesso na sua planilha!")
+                # Calcular valores absolutos antes de salvar
+                frente_abs = calcular_leitura_absoluta(frente_val, ultima_frente)
+                cem_abs = calcular_leitura_absoluta(cem_val, ultima_cem)
+                fundos_abs = calcular_leitura_absoluta(fundos_val, ultima_fundos)
+                agua_abs = calcular_leitura_absoluta(agua_input, ultima_agua)
+                
+                data_str = data_registro.strftime("%d/%m/%Y")
+                linha_dados = [data_str, frente_abs, cem_abs, fundos_abs, agua_abs]
+                
+                # Lógica de Salvar ou Atualizar
+                if not df_mes.empty and 'Data' in df_mes.columns:
+                    indices_encontrados = df_mes.index[df_mes['Data'] == data_str].tolist()
+                    if indices_encontrados:
+                        linha_planilha = indices_encontrados[0] + 2 # +2 por causa do cabeçalho e index 0
+                        intervalo = f"A{linha_planilha}:E{linha_planilha}"
+                        planilha_mes.update(values=[linha_dados], range_name=intervalo)
+                        st.success(f"✅ Dados ATUALIZADOS com sucesso na data {data_str}!")
+                    else:
+                        planilha_mes.append_row(linha_dados, value_input_option="USER_ENTERED")
+                        st.success(f"✅ Novos dados SALVOS com sucesso para o dia {data_str}!")
+                else:
+                    # Planilha estava vazia ou sem estrutura
+                    planilha_mes.append_row(linha_dados, value_input_option="USER_ENTERED")
+                    st.success("✅ Novos dados SALVOS com sucesso!")
             except Exception as e:
                 st.error(f"⚠️ Erro ao salvar na planilha: {e}")
 
 elif menu in ["Frente", "100", "Fundos"]:
-    st.markdown(f'<h2 style="text-align: left;">⚡ {menu}</h2>', unsafe_allow_html=True)
+    st.markdown(f'<h2 style="margin-bottom: 0px;">⚡ {menu}</h2>', unsafe_allow_html=True)
     
-    # Atribuindo as variáveis dinâmicas dependendo do menu selecionado
-    if menu == "Frente":
-        consumo_hoje = consumo_hoje_frente
-        previsao_fechamento = previsao_frente
-    elif menu == "100":
-        consumo_hoje = consumo_hoje_cem
-        previsao_fechamento = previsao_cem
-    else:
-        consumo_hoje = consumo_hoje_fundos
-        previsao_fechamento = previsao_fundos
-
-    variacao_ideal = consumo_hoje - meta_ideal_diaria
+    consumo_hoje = 0.0
+    previsao_fechamento = 0.0
+    variacao_ideal = 0.0
 
     col1, col2 = st.columns(2)
     with col1:
-        st.metric("Consumo Hoje", f"{consumo_hoje:.1f} kWh", f"{variacao_ideal:+.1f} kWh", delta_color="inverse")
+        st.metric("Consumo Hoje", f"{consumo_hoje:.1f} kWh", f"{variacao_ideal:+.1f} kWh" if variacao_ideal != 0 else None, delta_color="inverse")
         st.metric("Previsão Fechamento", f"{previsao_fechamento:.1f} kWh")
     with col2:
         st.metric("Ideal para o Dia", f"{meta_ideal_diaria:.1f} kWh", " ", delta_color="off")
         st.metric("Dias Restantes", f"{dias_no_ciclo} dias")
 
 elif menu == "Água":
-    st.markdown('<h2 style="text-align: left;">💧 Água</h2>', unsafe_allow_html=True)
-    st.metric("Leitura Consolidada", "0.000 m³") # Aguardando mapeamento
+    st.markdown('<h2 style="margin-bottom: 0px;">💧 Água</h2>', unsafe_allow_html=True)
+    st.metric("Leitura Consolidada", "0.000 m³")
     
+    meta_maxima_agua = 15.0
+    consumo_ciclo_agua = 0.0
+    projecao_agua = 0.0
     saldo_meta = meta_maxima_agua - consumo_ciclo_agua
     variacao_projecao = projecao_agua - meta_maxima_agua
 
@@ -143,60 +167,87 @@ elif menu == "Água":
         st.metric("Consumo no Ciclo", f"{consumo_ciclo_agua:.3f} m³", " ", delta_color="off")
         st.metric("Disponível na Meta", f"{saldo_meta:.3f} m³")
     with c2:
-        st.metric("Projeção do Ciclo", f"{projecao_agua:.3f} m³", f"{variacao_projecao:+.3f} m³", delta_color="inverse")
+        st.metric("Projeção do Ciclo", f"{projecao_agua:.3f} m³", f"{variacao_projecao:+.3f} m³" if variacao_projecao != 0 else None, delta_color="inverse")
         st.metric("Meta Máxima", f"{meta_maxima_agua:.3f} m³")
 
 elif menu == "Visão Geral":
-    st.markdown('<h2 style="text-align: left;">📊 Resumo do Ciclo</h2>', unsafe_allow_html=True)
-    st.caption("Período Luz: Aguardando dados reais...")
-    st.caption("Período Água: Aguardando dados reais...")
+    st.markdown('<h2 style="margin-bottom: 0px;">📊 Resumo do Ciclo</h2>', unsafe_allow_html=True)
+    st.caption("Período da Fatura: Lendo dados...")
     
-    st.markdown(f"""
+    st.markdown("""
     | Medidor | Consumo Atual | Previsão | Prev. R$ |
     | :--- | :--- | :--- | :--- |
-    | **Frente** | {consumo_hoje_frente} kWh | {previsao_frente} kWh | R$ 0,00 |
-    | **100** | {consumo_hoje_cem} kWh | {previsao_cem} kWh | R$ 0,00 |
-    | **Fundos** | {consumo_hoje_fundos} kWh | {previsao_fundos} kWh | R$ 0,00 |
-    | **100 + Fundos** | **{consumo_hoje_cem + consumo_hoje_fundos} kWh** | **{previsao_cem + previsao_fundos} kWh** | **R$ 0,00** |
-    | **Água** | {consumo_ciclo_agua} m³ | {projecao_agua} m³ | - |
+    | **Frente** | 0.0 kWh | 0.0 kWh | R$ 0,00 |
+    | **100** | 0.0 kWh | 0.0 kWh | R$ 0,00 |
+    | **Fundos** | 0.0 kWh | 0.0 kWh | R$ 0,00 |
+    | **100 + Fundos** | **0.0 kWh** | **0.0 kWh** | **R$ 0,00** |
+    | **Água** | 0.0 m³ | 0.0 m³ | - |
     """)
 
 elif menu == "Configuração de Ciclo":
-    st.markdown('<h2 style="text-align: left;">⚙️ Configuração do Mês</h2>', unsafe_allow_html=True)
+    st.markdown('<h2 style="margin-bottom: 0px;">⚙️ Configuração do Mês</h2>', unsafe_allow_html=True)
     
-    opcao_config = st.selectbox("Selecione o serviço para configurar:", ["⚡ Luz", "💧 Água"])
+    aba_luz, aba_agua = st.tabs(["⚡ Luz", "💧 Água"])
     
-    if opcao_config == "⚡ Luz":
+    with aba_luz:
         with st.form("form_config_luz"):
             st.subheader("Período do Ciclo")
             c1, c2 = st.columns(2)
             with c1:
-                st.date_input("Início do Ciclo", value=None, format="DD/MM/YYYY", key="inicio_luz")
+                inicio_luz = st.date_input("Início do Ciclo", value=None, format="DD/MM/YYYY")
             with c2:
-                st.date_input("Fim do Ciclo", value=None, format="DD/MM/YYYY", key="fim_luz")
+                fim_luz = st.date_input("Fim do Ciclo", value=None, format="DD/MM/YYYY")
                 
-            st.subheader("Taxas e Impostos da Fatura (R$)")
-            
+            st.subheader("Taxas da Fatura (R$)")
             t1, t2 = st.columns(2)
             with t1:
-                st.number_input("PIS/COFINS", value=None, format="%.2f", step=0.10)
-                st.number_input("ICMS", value=None, format="%.2f", step=0.10)
+                pis_luz = st.number_input("PIS/COFINS", value=0.0, format="%.2f", step=0.10)
+                icms_luz = st.number_input("ICMS", value=0.0, format="%.2f", step=0.10)
             with t2:
-                st.number_input("Ilum. Pública", value=None, format="%.2f", step=0.10)
-                st.number_input("Outras (Multas/Juros)", value=None, format="%.2f", step=0.10)
+                ilum_luz = st.number_input("Ilum. Pública", value=0.0, format="%.2f", step=0.10)
+                outras_luz = st.number_input("Outros", value=0.0, format="%.2f", step=0.10)
+                
+            st.subheader("Valor do kWh (R$)")
+            k1, k2, k3 = st.columns(3)
+            with k1:
+                kwh_frente = st.number_input("Frente (R$)", value=0.0, format="%.4f", step=0.01)
+            with k2:
+                kwh_cem = st.number_input("100 (R$)", value=0.0, format="%.4f", step=0.01)
+            with k3:
+                kwh_fundos = st.number_input("Fundos (R$)", value=0.0, format="%.4f", step=0.01)
             
-            st.write("Aplicar taxas a quais áreas?")
+            st.write("Aplicar taxas fixas a quais medidores?")
             col_a, col_b, col_c = st.columns(3)
             with col_a:
-                st.checkbox("Frente", value=True)
+                taxa_frente = st.checkbox("Frente", value=True)
             with col_b:
-                st.checkbox("100", value=True)
+                taxa_cem = st.checkbox("100", value=True)
             with col_c:
-                st.checkbox("Fundos", value=True)
+                taxa_fundos = st.checkbox("Fundos", value=True)
                 
-            st.form_submit_button("Salvar Ciclo da Luz", use_container_width=True)
+            submit_luz = st.form_submit_button("Salvar Ciclo da Luz", use_container_width=True)
+            
+            if submit_luz:
+                try:
+                    planilha_config = get_worksheet_config()
+                    # Salvando tudo numa lista em formato de chave e valor
+                    configs = [
+                        ["luz_inicio", inicio_luz.strftime("%d/%m/%Y") if inicio_luz else ""],
+                        ["luz_fim", fim_luz.strftime("%d/%m/%Y") if fim_luz else ""],
+                        ["luz_pis", pis_luz], ["luz_icms", icms_luz],
+                        ["luz_ilum", ilum_luz], ["luz_outros", outras_luz],
+                        ["luz_kwh_frente", kwh_frente], ["luz_kwh_cem", kwh_cem], ["luz_kwh_fundos", kwh_fundos],
+                        ["luz_aplica_frente", taxa_frente], ["luz_aplica_cem", taxa_cem], ["luz_aplica_fundos", taxa_fundos]
+                    ]
+                    # Limpa a aba e escreve os novos (forma simples e robusta)
+                    planilha_config.clear()
+                    planilha_config.append_row(["Chave", "Valor"])
+                    planilha_config.append_rows(configs)
+                    st.success("✅ Configurações da Luz salvas com sucesso na base de dados!")
+                except Exception as e:
+                    st.error(f"⚠️ Erro ao salvar configs: {e}")
 
-    elif opcao_config == "💧 Água":
+    with aba_agua:
         with st.form("form_config_agua"):
             st.subheader("Período do Ciclo")
             c1, c2 = st.columns(2)
@@ -205,6 +256,5 @@ elif menu == "Configuração de Ciclo":
             with c2:
                 st.date_input("Fim do Ciclo", value=None, format="DD/MM/YYYY", key="fim_agua")
             
-            st.info("Nota do Sistema: O aplicativo calculará automaticamente o resíduo (litros) deixado da medição anterior e incluirá neste novo ciclo para manter o saldo sempre absoluto.")
-            
+            st.info("O aplicativo calculará automaticamente o resíduo (litros) deixado da medição anterior.")
             st.form_submit_button("Salvar Ciclo da Água", use_container_width=True)
