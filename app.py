@@ -39,12 +39,10 @@ def get_worksheet_config():
     return sheet
 
 def safe_float(val):
-    # Parser blindado para ler os números da planilha sem quebrar
     if pd.isna(val) or val is None or val == "":
         return 0.0
     if isinstance(val, (int, float)):
         return float(val)
-    
     val_str = str(val).strip()
     if '.' in val_str and ',' in val_str:
         if val_str.rfind(',') > val_str.rfind('.'):
@@ -53,7 +51,6 @@ def safe_float(val):
             val_str = val_str.replace(',', '') # US
     elif ',' in val_str:
         val_str = val_str.replace(',', '.')
-    
     try:
         return float(val_str)
     except:
@@ -71,17 +68,18 @@ def calcular_leitura_absoluta(leitura_input, ultima_leitura_absoluta):
         
     return float(base + leitura_input)
 
+def formatar_para_planilha(valor_float):
+    # BLINDAGEM: Envia dados como string pt-BR para a planilha não converter em números gigantes
+    return f"{valor_float}".replace('.', ',')
+
 def update_configs(novas_configs_dict):
     planilha_config = get_worksheet_config()
     records = planilha_config.get_all_records()
     existente = {str(row['Chave']): row['Valor'] for row in records if 'Chave' in row}
-    
-    existente.update(novas_configs_dict) # Mescla sem apagar os outros
-    
+    existente.update(novas_configs_dict)
     lista_salvar = [["Chave", "Valor"]]
     for k, v in existente.items():
         lista_salvar.append([k, v])
-        
     planilha_config.clear()
     planilha_config.append_rows(lista_salvar)
 
@@ -103,7 +101,6 @@ try:
 except Exception:
     df_mes = pd.DataFrame()
 
-# Carregando Configurações
 try:
     df_config = pd.DataFrame(get_worksheet_config().get_all_records())
     config_dict = dict(zip(df_config['Chave'], df_config['Valor']))
@@ -124,7 +121,6 @@ aplica_fundos = str(config_dict.get('luz_aplica_fundos', 'True')).lower() == 'tr
 dias_totais_luz, dias_decorridos_luz = calcular_dias(config_dict.get('luz_inicio', ''), config_dict.get('luz_fim', ''))
 dias_totais_agua, dias_decorridos_agua = calcular_dias(config_dict.get('agua_inicio', ''), config_dict.get('agua_fim', ''))
 
-# Processamento de Leituras da Planilha
 ultima_frente = ultima_cem = ultima_fundos = ultima_agua = 0.0
 c_ciclo_frente = c_ciclo_cem = c_ciclo_fundos = c_ciclo_agua = 0.0
 c_hoje_frente = c_hoje_cem = c_hoje_fundos = c_hoje_agua = 0.0
@@ -153,7 +149,6 @@ if not df_mes.empty and len(df_mes) >= 1:
     else:
         c_hoje_frente, c_hoje_cem, c_hoje_fundos, c_hoje_agua = c_ciclo_frente, c_ciclo_cem, c_ciclo_fundos, c_ciclo_agua
 
-# Previsões
 prev_frente = (c_ciclo_frente / dias_decorridos_luz) * dias_totais_luz if dias_decorridos_luz > 0 else 0.0
 prev_cem = (c_ciclo_cem / dias_decorridos_luz) * dias_totais_luz if dias_decorridos_luz > 0 else 0.0
 prev_fundos = (c_ciclo_fundos / dias_decorridos_luz) * dias_totais_luz if dias_decorridos_luz > 0 else 0.0
@@ -171,23 +166,37 @@ menu = st.sidebar.radio(
 if menu == "Registro Rápido":
     st.markdown('<h2 style="margin-bottom: 0px;">Registro Diário</h2>', unsafe_allow_html=True)
     data_registro = st.date_input("Data da Leitura", value=date.today(), format="DD/MM/YYYY")
+    data_str = data_registro.strftime("%d/%m/%Y")
+
+    # Lógica de AUTO-FILL (Puxar dados se a data já existir na planilha)
+    f_def = c_def = fu_def = a_def = None
+    if not df_mes.empty and 'Data' in df_mes.columns:
+        linha_dia = df_mes[df_mes['Data'] == data_str]
+        if not linha_dia.empty:
+            try:
+                f_def = round(safe_float(linha_dia['Frente'].iloc[0]) % 100, 2)
+                c_def = round(safe_float(linha_dia['100'].iloc[0]) % 100, 2)
+                fu_def = round(safe_float(linha_dia['Fundos'].iloc[0]) % 100, 2)
+                a_def = round(safe_float(linha_dia['Agua'].iloc[0]) % 100, 3)
+            except:
+                pass
 
     with st.form("form_leituras", clear_on_submit=True):
         st.markdown('<h3>Entradas:</h3>', unsafe_allow_html=True)
         st.caption("Luz: digite dezena, unidade e 2 decimais (ex: 25.03)")
         
-        st.markdown('Frente <span style="color:#778DA9;">- UC 3.960.531.059-96 (XX,X(0/5))</span>', unsafe_allow_html=True)
-        frente_val = st.number_input("Frente", min_value=0.0, format="%.2f", step=0.5, label_visibility="collapsed", value=None)
+        st.markdown('Frente', unsafe_allow_html=True)
+        frente_val = st.number_input("Frente", min_value=0.0, format="%.2f", step=0.5, label_visibility="collapsed", value=f_def)
         
-        st.markdown('100 <span style="color:#778DA9;">- UC 1.804.326.059-23 (XX,X(0/5))</span>', unsafe_allow_html=True)
-        cem_val = st.number_input("100", min_value=0.0, format="%.2f", step=0.5, label_visibility="collapsed", value=None)
+        st.markdown('100', unsafe_allow_html=True)
+        cem_val = st.number_input("100", min_value=0.0, format="%.2f", step=0.5, label_visibility="collapsed", value=c_def)
         
-        st.markdown('Fundos <span style="color:#778DA9;">- UC 3.977.895.059-66 (XX,X(0/5))</span>', unsafe_allow_html=True)
-        fundos_val = st.number_input("Fundos", min_value=0.0, format="%.2f", step=0.5, label_visibility="collapsed", value=None)
+        st.markdown('Fundos', unsafe_allow_html=True)
+        fundos_val = st.number_input("Fundos", min_value=0.0, format="%.2f", step=0.5, label_visibility="collapsed", value=fu_def)
         
         st.caption("Água: digite dezena, unidade e 3 decimais (ex: 13.011)")
         st.markdown('Água', unsafe_allow_html=True)
-        agua_input = st.number_input("Água", min_value=0.0, format="%.3f", step=0.001, label_visibility="collapsed", value=None)
+        agua_input = st.number_input("Água", min_value=0.0, format="%.3f", step=0.001, label_visibility="collapsed", value=a_def)
 
         submitted = st.form_submit_button("Salvar Inteligente", use_container_width=True)
 
@@ -196,14 +205,43 @@ if menu == "Registro Rápido":
             st.warning("⚠️ Por favor, preencha todos os campos antes de salvar.")
         else:
             try:
-                # Transforma em Absoluto enviando Puros Floats (sem mascaras de string)
-                f_abs = calcular_leitura_absoluta(frente_val, ultima_frente)
-                c_abs = calcular_leitura_absoluta(cem_val, ultima_cem)
-                fu_abs = calcular_leitura_absoluta(fundos_val, ultima_fundos)
-                a_abs = calcular_leitura_absoluta(agua_input, ultima_agua)
+                # Buscando as leituras da data ANTERIOR para calcular a centena correta sem corromper se for edição
+                f_abs_base = ultima_frente
+                c_abs_base = ultima_cem
+                fu_abs_base = ultima_fundos
+                a_abs_base = ultima_agua
                 
-                data_str = data_registro.strftime("%d/%m/%Y")
-                linha_dados = [data_str, f_abs, c_abs, fu_abs, a_abs]
+                if not df_mes.empty and 'Data' in df_mes.columns:
+                    df_temp = df_mes.copy()
+                    df_temp['Data_Real'] = pd.to_datetime(df_temp['Data'], format='%d/%m/%Y', errors='coerce')
+                    data_atual_dt = pd.to_datetime(data_str, format='%d/%m/%Y', errors='coerce')
+                    
+                    anteriores = df_temp[df_temp['Data_Real'] < data_atual_dt].sort_values('Data_Real')
+                    if not anteriores.empty:
+                        f_abs_base = safe_float(anteriores['Frente'].iloc[-1])
+                        c_abs_base = safe_float(anteriores['100'].iloc[-1])
+                        fu_abs_base = safe_float(anteriores['Fundos'].iloc[-1])
+                        a_abs_base = safe_float(anteriores['Agua'].iloc[-1])
+                    else:
+                        linha_atual = df_temp[df_temp['Data'] == data_str]
+                        if not linha_atual.empty:
+                            f_abs_base = safe_float(linha_atual['Frente'].iloc[0])
+                            c_abs_base = safe_float(linha_atual['100'].iloc[0])
+                            fu_abs_base = safe_float(linha_atual['Fundos'].iloc[0])
+                            a_abs_base = safe_float(linha_atual['Agua'].iloc[0])
+
+                f_abs = calcular_leitura_absoluta(frente_val, f_abs_base)
+                c_abs = calcular_leitura_absoluta(cem_val, c_abs_base)
+                fu_abs = calcular_leitura_absoluta(fundos_val, fu_abs_base)
+                a_abs = calcular_leitura_absoluta(agua_input, a_abs_base)
+                
+                linha_dados = [
+                    data_str, 
+                    formatar_para_planilha(f_abs), 
+                    formatar_para_planilha(c_abs), 
+                    formatar_para_planilha(fu_abs), 
+                    formatar_para_planilha(a_abs)
+                ]
                 
                 if not df_mes.empty and 'Data' in df_mes.columns:
                     indices_encontrados = df_mes.index[df_mes['Data'] == data_str].tolist()
@@ -223,7 +261,7 @@ if menu == "Registro Rápido":
 elif menu in ["Frente", "100", "Fundos"]:
     st.markdown(f'<h2 style="margin-bottom: 0px;">⚡ {menu}</h2>', unsafe_allow_html=True)
     
-    meta_ideal_diaria = 150.0 / dias_totais_luz
+    meta_ideal_diaria = 150.0 / dias_totais_luz if dias_totais_luz > 0 else 5.0
     
     if menu == "Frente":
         c_hoje, p_fech = c_hoje_frente, prev_frente
@@ -239,7 +277,7 @@ elif menu in ["Frente", "100", "Fundos"]:
         st.metric("Consumo Hoje", f"{c_hoje:.1f} kWh", f"{variacao_ideal:+.1f} kWh" if variacao_ideal != 0 else None, delta_color="inverse")
         st.metric("Previsão Fechamento", f"{p_fech:.1f} kWh")
     with col2:
-        st.metric("Ideal para o Dia", f"{meta_ideal_diaria:.1f} kWh", " ", delta_color="off") # Espaço invisível para alinhar
+        st.metric("Ideal para o Dia", f"{meta_ideal_diaria:.1f} kWh", " ", delta_color="off")
         st.metric("Dias Restantes", f"{dias_totais_luz - dias_decorridos_luz} dias")
 
 elif menu == "Água":
