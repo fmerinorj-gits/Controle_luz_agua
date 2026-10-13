@@ -115,7 +115,7 @@ def calcular_dias(inicio_str, fim_str):
 
 try:
     planilha_mes = get_worksheet_mes()
-    raw_values = planilha_mes.get_values(value_render_option='UNFORMATTED_VALUE') 
+    raw_values = planilha_mes.get_values() 
     if len(raw_values) > 1:
         df_mes = pd.DataFrame(raw_values[1:], columns=raw_values[0])
     else:
