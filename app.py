@@ -6,6 +6,8 @@ from google.oauth2.service_account import Credentials
 
 st.set_page_config(page_title="Controle Luz & Água", layout="centered", initial_sidebar_state="collapsed")
 
+# --- CONEXÃO COM O GOOGLE SHEETS ---
+@st.cache_resource
 def get_gspread_client():
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
@@ -22,18 +24,42 @@ def get_worksheet():
     try:
         sheet = spreadsheet.worksheet(current_sheet_name)
     except gspread.WorksheetNotFound:
+        # Se não achar a aba do mês, pega a primeira aba existente
         sheet = spreadsheet.get_worksheet(0)
     return sheet
 
-def calcular_centena_agua(leitura_input: float, ultima_leitura_total: float) -> float:
-    if ultima_leitura_total <= 0:
-        return leitura_input
-    centena_base = int(ultima_leitura_total // 100) * 100
-    resto_anterior = ultima_leitura_total % 100
-    if (leitura_input % 100) < resto_anterior and (resto_anterior - (leitura_input % 100)) > 50:
-        centena_base += 100
-    return round(centena_base + leitura_input, 3)
+# --- LÓGICA DE DADOS (CÉREBRO) ---
+# Aqui tentamos puxar os dados reais da planilha
+try:
+    planilha = get_worksheet()
+    # Puxa todos os dados. Como sua planilha tem formatações complexas (G4, C1), 
+    # se isso falhar, os dados ficam zerados aguardando mapeamento exato.
+    dados = planilha.get_all_records()
+    df = pd.DataFrame(dados)
+except Exception as e:
+    df = pd.DataFrame()
 
+# Variáveis que substituirão os dados fictícios
+meta_ideal_luz_mes = 150.0
+dias_no_ciclo = 30 # Isso será calculado futuramente com as datas
+meta_ideal_diaria = meta_ideal_luz_mes / dias_no_ciclo
+
+# Inicializando valores reais zerados (até mapearmos sua planilha 100%)
+# Frente
+consumo_hoje_frente = 0.0
+previsao_frente = 0.0
+# 100
+consumo_hoje_cem = 0.0
+previsao_cem = 0.0
+# Fundos
+consumo_hoje_fundos = 0.0
+previsao_fundos = 0.0
+# Água
+consumo_ciclo_agua = 0.0
+projecao_agua = 0.0
+meta_maxima_agua = 15.0
+
+# --- INTERFACE ---
 menu = st.sidebar.radio(
     "Navegação",
     ["Registro Rápido", "Visão Geral", "Frente", "100", "Fundos", "Água", "Configuração de Ciclo"]
@@ -68,49 +94,71 @@ if menu == "Registro Rápido":
             st.warning("⚠️ Por favor, preencha todos os medidores antes de salvar.")
         else:
             try:
-                sheet = get_worksheet()
-                records = sheet.get_all_records()
-                st.success("Dados registrados com sucesso na planilha!")
+                # LÓGICA REAL DE SALVAMENTO (Vai escrever na primeira linha vazia da planilha)
+                nova_linha = [
+                    data_registro.strftime("%d/%m/%Y"), 
+                    frente_val, 
+                    cem_val, 
+                    fundos_val, 
+                    agua_input
+                ]
+                planilha.append_row(nova_linha, value_input_option="USER_ENTERED")
+                st.success("✅ Dados registrados com sucesso na sua planilha!")
             except Exception as e:
-                st.error("🔌 Interface pronta! O próximo passo é conectarmos com a sua planilha do Google Sheets para os dados serem salvos de verdade.")
+                st.error(f"⚠️ Erro ao salvar na planilha: {e}")
 
 elif menu in ["Frente", "100", "Fundos"]:
     st.markdown(f'<h2 style="text-align: left;">⚡ {menu}</h2>', unsafe_allow_html=True)
     
+    # Atribuindo as variáveis dinâmicas dependendo do menu selecionado
+    if menu == "Frente":
+        consumo_hoje = consumo_hoje_frente
+        previsao_fechamento = previsao_frente
+    elif menu == "100":
+        consumo_hoje = consumo_hoje_cem
+        previsao_fechamento = previsao_cem
+    else:
+        consumo_hoje = consumo_hoje_fundos
+        previsao_fechamento = previsao_fundos
+
+    variacao_ideal = consumo_hoje - meta_ideal_diaria
+
     col1, col2 = st.columns(2)
     with col1:
-        # Usando delta_color="inverse" para que valores acima do ideal (positivos) fiquem vermelhos
-        st.metric("Consumo Hoje", "6.2 kWh", "+1.2 kWh", delta_color="inverse")
-        st.metric("Previsão Fechamento", "145 kWh")
+        st.metric("Consumo Hoje", f"{consumo_hoje:.1f} kWh", f"{variacao_ideal:+.1f} kWh", delta_color="inverse")
+        st.metric("Previsão Fechamento", f"{previsao_fechamento:.1f} kWh")
     with col2:
-        # Espaço em branco no delta forçado (" ") para alinhar perfeitamente com a coluna 1
-        st.metric("Ideal para o Dia", "5.0 kWh", " ", delta_color="off")
-        st.metric("Dias Restantes", "14 dias")
+        st.metric("Ideal para o Dia", f"{meta_ideal_diaria:.1f} kWh", " ", delta_color="off")
+        st.metric("Dias Restantes", f"{dias_no_ciclo} dias")
 
 elif menu == "Água":
     st.markdown('<h2 style="text-align: left;">💧 Água</h2>', unsafe_allow_html=True)
-    st.metric("Leitura Consolidada", "613.011 m³")
+    st.metric("Leitura Consolidada", "0.000 m³") # Aguardando mapeamento
+    
+    saldo_meta = meta_maxima_agua - consumo_ciclo_agua
+    variacao_projecao = projecao_agua - meta_maxima_agua
+
     c1, c2 = st.columns(2)
     with c1:
-        st.metric("Consumo no Ciclo", "7.011 m³", " ", delta_color="off")
-        st.metric("Disponível na Meta", "7.989 m³")
+        st.metric("Consumo no Ciclo", f"{consumo_ciclo_agua:.3f} m³", " ", delta_color="off")
+        st.metric("Disponível na Meta", f"{saldo_meta:.3f} m³")
     with c2:
-        st.metric("Projeção do Ciclo", "13.146 m³", "-1.854 m³ (Abaixo do limite)", delta_color="normal")
-        st.metric("Meta Máxima", "15.000 m³")
+        st.metric("Projeção do Ciclo", f"{projecao_agua:.3f} m³", f"{variacao_projecao:+.3f} m³", delta_color="inverse")
+        st.metric("Meta Máxima", f"{meta_maxima_agua:.3f} m³")
 
 elif menu == "Visão Geral":
     st.markdown('<h2 style="text-align: left;">📊 Resumo do Ciclo</h2>', unsafe_allow_html=True)
-    st.caption("Período Luz: 18/09/2026 a 18/10/2026")
-    st.caption("Período Água: 15/09/2026 a 15/10/2026")
+    st.caption("Período Luz: Aguardando dados reais...")
+    st.caption("Período Água: Aguardando dados reais...")
     
-    st.markdown("""
+    st.markdown(f"""
     | Medidor | Consumo Atual | Previsão | Prev. R$ |
     | :--- | :--- | :--- | :--- |
-    | **Frente** | 186 kWh | 354 kWh | R$ 320,00 |
-    | **100** | 142 kWh | 290 kWh | R$ 265,00 |
-    | **Fundos** | 95 kWh | 195 kWh | R$ 180,00 |
-    | **100 + Fundos** | **237 kWh** | **485 kWh** | **R$ 445,00** |
-    | **Água** | 7.011 m³ | 13.146 m³ | - |
+    | **Frente** | {consumo_hoje_frente} kWh | {previsao_frente} kWh | R$ 0,00 |
+    | **100** | {consumo_hoje_cem} kWh | {previsao_cem} kWh | R$ 0,00 |
+    | **Fundos** | {consumo_hoje_fundos} kWh | {previsao_fundos} kWh | R$ 0,00 |
+    | **100 + Fundos** | **{consumo_hoje_cem + consumo_hoje_fundos} kWh** | **{previsao_cem + previsao_fundos} kWh** | **R$ 0,00** |
+    | **Água** | {consumo_ciclo_agua} m³ | {projecao_agua} m³ | - |
     """)
 
 elif menu == "Configuração de Ciclo":
