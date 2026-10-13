@@ -46,14 +46,16 @@ if menu == "Registro Rápido":
     with st.form("form_leituras", clear_on_submit=True):
         st.markdown('<h3 style="text-align: left;">Entradas:</h3>', unsafe_allow_html=True)
         
+        st.caption("Luz: digite dezena, unidade e 2 decimais (ex: 25.03)")
+        
         st.markdown('Frente <span style="color:#778DA9;">- UC 3.960.531.059-96</span>', unsafe_allow_html=True)
-        frente_val = st.number_input("Frente", min_value=0.0, format="%.1f", step=0.5, label_visibility="collapsed", value=None)
+        frente_val = st.number_input("Frente", min_value=0.0, format="%.2f", step=0.5, label_visibility="collapsed", value=None)
         
         st.markdown('100 <span style="color:#778DA9;">- UC 1.804.326.059-23</span>', unsafe_allow_html=True)
-        cem_val = st.number_input("100", min_value=0.0, format="%.1f", step=0.5, label_visibility="collapsed", value=None)
+        cem_val = st.number_input("100", min_value=0.0, format="%.2f", step=0.5, label_visibility="collapsed", value=None)
         
         st.markdown('Fundos <span style="color:#778DA9;">- UC 3.977.895.059-66</span>', unsafe_allow_html=True)
-        fundos_val = st.number_input("Fundos", min_value=0.0, format="%.1f", step=0.5, label_visibility="collapsed", value=None)
+        fundos_val = st.number_input("Fundos", min_value=0.0, format="%.2f", step=0.5, label_visibility="collapsed", value=None)
         
         st.caption("Água: digite dezena, unidade e 3 decimais (ex: 13.011)")
         st.markdown('Água', unsafe_allow_html=True)
@@ -74,29 +76,32 @@ if menu == "Registro Rápido":
 
 elif menu in ["Frente", "100", "Fundos"]:
     st.markdown(f'<h2 style="text-align: left;">⚡ {menu}</h2>', unsafe_allow_html=True)
+    
     col1, col2 = st.columns(2)
     with col1:
-        st.metric("Consumo Hoje", "12.4 kWh", "+1.2 kWh")
-        st.metric("Média Diária", "11.8 kWh")
+        # Usando delta_color="inverse" para que valores acima do ideal (positivos) fiquem vermelhos
+        st.metric("Consumo Hoje", "6.2 kWh", "+1.2 kWh", delta_color="inverse")
+        st.metric("Previsão Fechamento", "145 kWh")
     with col2:
-        st.metric("Previsão Fechamento", "354 kWh")
-        st.metric("Dias Restantes no Ciclo", "14 dias")
+        # Espaço em branco no delta forçado (" ") para alinhar perfeitamente com a coluna 1
+        st.metric("Ideal para o Dia", "5.0 kWh", " ", delta_color="off")
+        st.metric("Dias Restantes", "14 dias")
 
 elif menu == "Água":
     st.markdown('<h2 style="text-align: left;">💧 Água</h2>', unsafe_allow_html=True)
     st.metric("Leitura Consolidada", "613.011 m³")
     c1, c2 = st.columns(2)
     with c1:
-        st.metric("Consumo no Ciclo", "7.011 m³ (7.011 L)")
-        st.metric("Média Diária", "0.438 m³ (438 L)")
+        st.metric("Consumo no Ciclo", "7.011 m³", " ", delta_color="off")
+        st.metric("Disponível na Meta", "7.989 m³")
     with c2:
-        st.metric("Disponível na Meta", "7.989 m³ (7.989 L)")
-        st.metric("Projeção do Ciclo", "13.146 m³", delta="Dentro do limite (15 m³)")
+        st.metric("Projeção do Ciclo", "13.146 m³", "-1.854 m³ (Abaixo do limite)", delta_color="normal")
+        st.metric("Meta Máxima", "15.000 m³")
 
 elif menu == "Visão Geral":
     st.markdown('<h2 style="text-align: left;">📊 Resumo do Ciclo</h2>', unsafe_allow_html=True)
-    st.caption("Período Luz: 18/09/2026 a 18/10/2026") # Célula C1
-    st.caption("Período Água: 15/09/2026 a 15/10/2026") # Célula B20
+    st.caption("Período Luz: 18/09/2026 a 18/10/2026")
+    st.caption("Período Água: 15/09/2026 a 15/10/2026")
     
     st.markdown("""
     | Medidor | Consumo Atual | Previsão | Prev. R$ |
@@ -111,7 +116,6 @@ elif menu == "Visão Geral":
 elif menu == "Configuração de Ciclo":
     st.markdown('<h2 style="text-align: left;">⚙️ Configuração do Mês</h2>', unsafe_allow_html=True)
     
-    # Substituindo abas por um Selectbox (muito melhor para apertar no celular)
     opcao_config = st.selectbox("Selecione o serviço para configurar:", ["⚡ Luz", "💧 Água"])
     
     if opcao_config == "⚡ Luz":
@@ -124,7 +128,6 @@ elif menu == "Configuração de Ciclo":
                 st.date_input("Fim do Ciclo", value=None, format="DD/MM/YYYY", key="fim_luz")
                 
             st.subheader("Taxas e Impostos da Fatura (R$)")
-            st.caption("Estes valores comporão a previsão financeira (Célula G4 e Coluna I).")
             
             t1, t2 = st.columns(2)
             with t1:
@@ -134,7 +137,7 @@ elif menu == "Configuração de Ciclo":
                 st.number_input("Ilum. Pública", value=None, format="%.2f", step=0.10)
                 st.number_input("Outras (Multas/Juros)", value=None, format="%.2f", step=0.10)
             
-            st.write("Aplicar taxas a quais medidores?")
+            st.write("Aplicar taxas a quais áreas?")
             col_a, col_b, col_c = st.columns(3)
             with col_a:
                 st.checkbox("Frente", value=True)
@@ -154,6 +157,6 @@ elif menu == "Configuração de Ciclo":
             with c2:
                 st.date_input("Fim do Ciclo", value=None, format="DD/MM/YYYY", key="fim_agua")
             
-            st.info("Nota do Sistema: O aplicativo calculará automaticamente o resíduo (milésimos) deixado da medição anterior e incluirá neste novo ciclo para manter o saldo sempre absoluto.")
+            st.info("Nota do Sistema: O aplicativo calculará automaticamente o resíduo (litros) deixado da medição anterior e incluirá neste novo ciclo para manter o saldo sempre absoluto.")
             
             st.form_submit_button("Salvar Ciclo da Água", use_container_width=True)
