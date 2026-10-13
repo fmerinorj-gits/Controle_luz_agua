@@ -45,7 +45,7 @@ def safe_float(val):
         return float(val)
     val_str = str(val).strip()
     if ',' in val_str:
-        val_str = val_str.replace('.', '') # Remove ponto de milhar
+        val_str = val_str.replace('.', '') # Remove possível ponto de milhar
         val_str = val_str.replace(',', '.') # Transforma vírgula decimal em ponto para o Python
     try:
         return float(val_str)
@@ -65,8 +65,9 @@ def calcular_leitura_absoluta(leitura_input, ultima_leitura_absoluta):
     return float(base + leitura_input)
 
 def formatar_para_planilha(valor_float):
-    # Envia garantindo 3 casas decimais e vírgula BR, para o Sheets nunca multiplicar por mil
-    return f"{valor_float:.3f}".replace('.', ',')
+    # Retorna o NÚMERO PURO (Float). Isso impede que o Sheets confunda vírgulas 
+    # com separador de milhar (Padrão US), que causou o bug dos milhares.
+    return round(float(valor_float), 3)
 
 def update_configs(novas_configs_dict):
     planilha_config = get_worksheet_config()
@@ -160,9 +161,7 @@ def calcular_valor_fatura(projecao_kwh, valor_kwh, tem_taxas, tem_social):
         kwh_cobrado = max(0.0, projecao_kwh - 80.0)
     
     total = kwh_cobrado * valor_kwh
-    if tem_taxas and total > 0.0: 
-        # Só adiciona as taxas se houver consumo ou se for regra da concessionária.
-        # Vamos assumir que taxas sempre aplicam se configurado.
+    if tem_taxas: 
         total += taxas_totais
         
     if total < 50.0:
@@ -183,7 +182,6 @@ if menu == "Registro Rápido":
     data_registro = st.date_input("Data da Leitura", value=date.today(), format="DD/MM/YYYY")
     data_str = data_registro.strftime("%d/%m/%Y")
 
-    # Lógica de AUTO-FILL (Puxar dados se a data já existir na planilha)
     f_def = c_def = fu_def = a_def = None
     if not df_mes.empty and 'Data' in df_mes.columns:
         linha_dia = df_mes[df_mes['Data'] == data_str]
@@ -200,7 +198,6 @@ if menu == "Registro Rápido":
         st.markdown('<h3>Entradas:</h3>', unsafe_allow_html=True)
         st.caption("Luz: digite dezena, unidade e 2 decimais (ex: 25.03)")
         
-        # A propriedade "key" usando a data força o Streamlit a limpar a tela ao mudar o dia!
         st.markdown('Frente <span style="color:#778DA9;">- UC 3.960.531.059-96</span>', unsafe_allow_html=True)
         frente_val = st.number_input("Frente", min_value=0.0, format="%.2f", step=0.5, label_visibility="collapsed", value=f_def, key=f"f_{data_str}")
         
@@ -221,7 +218,6 @@ if menu == "Registro Rápido":
             st.warning("⚠️ Por favor, preencha todos os campos antes de salvar.")
         else:
             try:
-                # Buscando as leituras da data ANTERIOR para calcular a centena correta sem corromper se for edição
                 f_abs_base = ultima_frente
                 c_abs_base = ultima_cem
                 fu_abs_base = ultima_fundos
@@ -294,7 +290,7 @@ elif menu in ["Frente", "100", "Fundos"]:
         st.metric("Consumo Hoje", f"{c_hoje:.1f} kWh", delta_str, delta_color="inverse")
         st.metric("Previsão Fechamento", f"{p_fech:.1f} kWh")
     with col2:
-        st.metric("Ideal para o Dia", f"{meta_ideal_diaria:.1f} kWh", " ", delta_color="off") # Espaço para manter alinhamento
+        st.metric("Ideal para o Dia", f"{meta_ideal_diaria:.1f} kWh", " ", delta_color="off") 
         st.metric("Dias Restantes", f"{dias_totais_luz - dias_decorridos_luz} dias")
 
 elif menu == "Água":
