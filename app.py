@@ -111,9 +111,10 @@ elif menu == "Visão Geral":
 elif menu == "Configuração de Ciclo":
     st.markdown('<h2 style="text-align: left;">⚙️ Configuração do Mês</h2>', unsafe_allow_html=True)
     
-    tab_luz, tab_agua = st.tabs(["⚡ Luz", "💧 Água"])
+    # Substituindo abas por um Selectbox (muito melhor para apertar no celular)
+    opcao_config = st.selectbox("Selecione o serviço para configurar:", ["⚡ Luz", "💧 Água"])
     
-    with tab_luz:
+    if opcao_config == "⚡ Luz":
         with st.form("form_config_luz"):
             st.subheader("Período do Ciclo")
             c1, c2 = st.columns(2)
@@ -122,10 +123,16 @@ elif menu == "Configuração de Ciclo":
             with c2:
                 st.date_input("Fim do Ciclo", value=None, format="DD/MM/YYYY", key="fim_luz")
                 
-            st.subheader("Taxas (R$) e Impostos")
-            st.number_input("TUSD (Tarifa de Distribuição)", value=None, format="%.4f")
-            st.number_input("TE (Tarifa de Energia)", value=None, format="%.4f")
-            st.number_input("Iluminação Pública", value=None, format="%.2f")
+            st.subheader("Taxas e Impostos da Fatura (R$)")
+            st.caption("Estes valores comporão a previsão financeira (Célula G4 e Coluna I).")
+            
+            t1, t2 = st.columns(2)
+            with t1:
+                st.number_input("PIS/COFINS", value=None, format="%.2f", step=0.10)
+                st.number_input("ICMS", value=None, format="%.2f", step=0.10)
+            with t2:
+                st.number_input("Ilum. Pública", value=None, format="%.2f", step=0.10)
+                st.number_input("Outras (Multas/Juros)", value=None, format="%.2f", step=0.10)
             
             st.write("Aplicar taxas a quais medidores?")
             col_a, col_b, col_c = st.columns(3)
@@ -138,7 +145,7 @@ elif menu == "Configuração de Ciclo":
                 
             st.form_submit_button("Salvar Ciclo da Luz", use_container_width=True)
 
-    with tab_agua:
+    elif opcao_config == "💧 Água":
         with st.form("form_config_agua"):
             st.subheader("Período do Ciclo")
             c1, c2 = st.columns(2)
