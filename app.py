@@ -44,20 +44,16 @@ def safe_float(val):
     if isinstance(val, (int, float)):
         return float(val)
     val_str = str(val).strip()
-    if '.' in val_str and ',' in val_str:
-        if val_str.rfind(',') > val_str.rfind('.'):
-            val_str = val_str.replace('.', '').replace(',', '.') # pt-BR
-        else:
-            val_str = val_str.replace(',', '') # US
-    elif ',' in val_str:
-        val_str = val_str.replace(',', '.')
+    if ',' in val_str:
+        val_str = val_str.replace('.', '') # Remove ponto de milhar
+        val_str = val_str.replace(',', '.') # Transforma vírgula decimal em ponto para o Python
     try:
         return float(val_str)
     except:
         return 0.0
 
 def calcular_leitura_absoluta(leitura_input, ultima_leitura_absoluta):
-    if ultima_leitura_absoluta == 0.0:
+    if ultima_leitura_absoluta <= 0.0:
         return float(leitura_input)
     
     base = int(ultima_leitura_absoluta // 100) * 100
@@ -69,8 +65,8 @@ def calcular_leitura_absoluta(leitura_input, ultima_leitura_absoluta):
     return float(base + leitura_input)
 
 def formatar_para_planilha(valor_float):
-    # BLINDAGEM: Envia dados como string pt-BR para a planilha não converter em números gigantes
-    return f"{valor_float}".replace('.', ',')
+    # Envia garantindo 3 casas decimais e vírgula BR, para o Sheets nunca multiplicar por mil
+    return f"{valor_float:.3f}".replace('.', ',')
 
 def update_configs(novas_configs_dict):
     planilha_config = get_worksheet_config()
@@ -118,6 +114,10 @@ aplica_frente = str(config_dict.get('luz_aplica_frente', 'True')).lower() == 'tr
 aplica_cem = str(config_dict.get('luz_aplica_cem', 'True')).lower() == 'true'
 aplica_fundos = str(config_dict.get('luz_aplica_fundos', 'True')).lower() == 'true'
 
+soc_frente = str(config_dict.get('luz_soc_frente', 'True')).lower() == 'true'
+soc_cem = str(config_dict.get('luz_soc_cem', 'True')).lower() == 'true'
+soc_fundos = str(config_dict.get('luz_soc_fundos', 'False')).lower() == 'true'
+
 dias_totais_luz, dias_decorridos_luz = calcular_dias(config_dict.get('luz_inicio', ''), config_dict.get('luz_fim', ''))
 dias_totais_agua, dias_decorridos_agua = calcular_dias(config_dict.get('agua_inicio', ''), config_dict.get('agua_fim', ''))
 
@@ -154,9 +154,24 @@ prev_cem = (c_ciclo_cem / dias_decorridos_luz) * dias_totais_luz if dias_decorri
 prev_fundos = (c_ciclo_fundos / dias_decorridos_luz) * dias_totais_luz if dias_decorridos_luz > 0 else 0.0
 prev_agua = (c_ciclo_agua / dias_decorridos_agua) * dias_totais_agua if dias_decorridos_agua > 0 else 0.0
 
-rs_frente = (prev_frente * kwh_frente) + (taxas_totais if aplica_frente else 0.0)
-rs_cem = (prev_cem * kwh_cem) + (taxas_totais if aplica_cem else 0.0)
-rs_fundos = (prev_fundos * kwh_fundos) + (taxas_totais if aplica_fundos else 0.0)
+def calcular_valor_fatura(projecao_kwh, valor_kwh, tem_taxas, tem_social):
+    kwh_cobrado = projecao_kwh
+    if tem_social:
+        kwh_cobrado = max(0.0, projecao_kwh - 80.0)
+    
+    total = kwh_cobrado * valor_kwh
+    if tem_taxas and total > 0.0: 
+        # Só adiciona as taxas se houver consumo ou se for regra da concessionária.
+        # Vamos assumir que taxas sempre aplicam se configurado.
+        total += taxas_totais
+        
+    if total < 50.0:
+        return 0.0 # Conta inferior a R$ 50 fica residual para próximo mês
+    return total
+
+rs_frente = calcular_valor_fatura(prev_frente, kwh_frente, aplica_frente, soc_frente)
+rs_cem = calcular_valor_fatura(prev_cem, kwh_cem, aplica_cem, soc_cem)
+rs_fundos = calcular_valor_fatura(prev_fundos, kwh_fundos, aplica_fundos, soc_fundos)
 
 menu = st.sidebar.radio(
     "Navegação",
@@ -185,18 +200,19 @@ if menu == "Registro Rápido":
         st.markdown('<h3>Entradas:</h3>', unsafe_allow_html=True)
         st.caption("Luz: digite dezena, unidade e 2 decimais (ex: 25.03)")
         
-        st.markdown('Frente', unsafe_allow_html=True)
-        frente_val = st.number_input("Frente", min_value=0.0, format="%.2f", step=0.5, label_visibility="collapsed", value=f_def)
+        # A propriedade "key" usando a data força o Streamlit a limpar a tela ao mudar o dia!
+        st.markdown('Frente <span style="color:#778DA9;">- UC 3.960.531.059-96</span>', unsafe_allow_html=True)
+        frente_val = st.number_input("Frente", min_value=0.0, format="%.2f", step=0.5, label_visibility="collapsed", value=f_def, key=f"f_{data_str}")
         
-        st.markdown('100', unsafe_allow_html=True)
-        cem_val = st.number_input("100", min_value=0.0, format="%.2f", step=0.5, label_visibility="collapsed", value=c_def)
+        st.markdown('100 <span style="color:#778DA9;">- UC 1.804.326.059-23</span>', unsafe_allow_html=True)
+        cem_val = st.number_input("100", min_value=0.0, format="%.2f", step=0.5, label_visibility="collapsed", value=c_def, key=f"c_{data_str}")
         
-        st.markdown('Fundos', unsafe_allow_html=True)
-        fundos_val = st.number_input("Fundos", min_value=0.0, format="%.2f", step=0.5, label_visibility="collapsed", value=fu_def)
+        st.markdown('Fundos <span style="color:#778DA9;">- UC 3.977.895.059-66</span>', unsafe_allow_html=True)
+        fundos_val = st.number_input("Fundos", min_value=0.0, format="%.2f", step=0.5, label_visibility="collapsed", value=fu_def, key=f"fu_{data_str}")
         
         st.caption("Água: digite dezena, unidade e 3 decimais (ex: 13.011)")
         st.markdown('Água', unsafe_allow_html=True)
-        agua_input = st.number_input("Água", min_value=0.0, format="%.3f", step=0.001, label_visibility="collapsed", value=a_def)
+        agua_input = st.number_input("Água", min_value=0.0, format="%.3f", step=0.001, label_visibility="collapsed", value=a_def, key=f"a_{data_str}")
 
         submitted = st.form_submit_button("Salvar Inteligente", use_container_width=True)
 
@@ -271,13 +287,14 @@ elif menu in ["Frente", "100", "Fundos"]:
         c_hoje, p_fech = c_hoje_fundos, prev_fundos
         
     variacao_ideal = c_hoje - meta_ideal_diaria
+    delta_str = f"{variacao_ideal:+.1f} kWh" if abs(variacao_ideal) > 0.01 else "0.0 kWh"
 
     col1, col2 = st.columns(2)
     with col1:
-        st.metric("Consumo Hoje", f"{c_hoje:.1f} kWh", f"{variacao_ideal:+.1f} kWh" if variacao_ideal != 0 else None, delta_color="inverse")
+        st.metric("Consumo Hoje", f"{c_hoje:.1f} kWh", delta_str, delta_color="inverse")
         st.metric("Previsão Fechamento", f"{p_fech:.1f} kWh")
     with col2:
-        st.metric("Ideal para o Dia", f"{meta_ideal_diaria:.1f} kWh", " ", delta_color="off")
+        st.metric("Ideal para o Dia", f"{meta_ideal_diaria:.1f} kWh", " ", delta_color="off") # Espaço para manter alinhamento
         st.metric("Dias Restantes", f"{dias_totais_luz - dias_decorridos_luz} dias")
 
 elif menu == "Água":
@@ -287,13 +304,14 @@ elif menu == "Água":
     meta_maxima_agua = 15.0
     saldo_meta = meta_maxima_agua - c_ciclo_agua
     variacao_projecao = prev_agua - meta_maxima_agua
+    delta_agua_str = f"{variacao_projecao:+.3f} m³" if abs(variacao_projecao) > 0.001 else "0.000 m³"
 
     c1, c2 = st.columns(2)
     with c1:
         st.metric("Consumo no Ciclo", f"{c_ciclo_agua:.3f} m³", " ", delta_color="off")
         st.metric("Disponível na Meta", f"{saldo_meta:.3f} m³")
     with c2:
-        st.metric("Projeção do Ciclo", f"{prev_agua:.3f} m³", f"{variacao_projecao:+.3f} m³" if variacao_projecao != 0 else None, delta_color="inverse")
+        st.metric("Projeção do Ciclo", f"{prev_agua:.3f} m³", delta_agua_str, delta_color="inverse")
         st.metric("Meta Máxima", f"{meta_maxima_agua:.3f} m³")
 
 elif menu == "Visão Geral":
@@ -345,12 +363,15 @@ elif menu == "Configuração de Ciclo":
             
             st.write("Aplicar taxas a quais medidores?")
             col_a, col_b, col_c = st.columns(3)
-            with col_a:
-                t_frente = st.checkbox("Frente", value=True)
-            with col_b:
-                t_cem = st.checkbox("100", value=True)
-            with col_c:
-                t_fundos = st.checkbox("Fundos", value=True)
+            with col_a: t_frente = st.checkbox("Frente", value=True)
+            with col_b: t_cem = st.checkbox("100", value=True)
+            with col_c: t_fundos = st.checkbox("Fundos", value=True)
+                
+            st.write("Aplicar Tarifa Social (Isenção de 80kWh)?")
+            col_sa, col_sb, col_sc = st.columns(3)
+            with col_sa: s_frente = st.checkbox("Frente (Social)", value=True)
+            with col_sb: s_cem = st.checkbox("100 (Social)", value=True)
+            with col_sc: s_fundos = st.checkbox("Fundos (Social)", value=False)
                 
             submit_luz = st.form_submit_button("Salvar Ciclo da Luz", use_container_width=True)
             
@@ -362,7 +383,8 @@ elif menu == "Configuração de Ciclo":
                         "luz_pis": float(pis_luz), "luz_icms": float(icms_luz),
                         "luz_ilum": float(ilum_luz), "luz_outros": float(outras_luz),
                         "luz_kwh_frente": float(k_frente), "luz_kwh_cem": float(k_cem), "luz_kwh_fundos": float(k_fundos),
-                        "luz_aplica_frente": bool(t_frente), "luz_aplica_cem": bool(t_cem), "luz_aplica_fundos": bool(t_fundos)
+                        "luz_aplica_frente": bool(t_frente), "luz_aplica_cem": bool(t_cem), "luz_aplica_fundos": bool(t_fundos),
+                        "luz_soc_frente": bool(s_frente), "luz_soc_cem": bool(s_cem), "luz_soc_fundos": bool(s_fundos)
                     })
                     st.success("✅ Configurações da Luz salvas com sucesso!")
                 except Exception as e:
