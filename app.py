@@ -44,9 +44,11 @@ def safe_float(val):
     if isinstance(val, (int, float)):
         return float(val)
     val_str = str(val).strip()
-    if ',' in val_str:
-        val_str = val_str.replace('.', '') # Remove possível ponto de milhar
-        val_str = val_str.replace(',', '.') # Transforma vírgula decimal em ponto para o Python
+    if ',' in val_str and '.' in val_str:
+        val_str = val_str.replace('.', '')
+        val_str = val_str.replace(',', '.')
+    elif ',' in val_str:
+        val_str = val_str.replace(',', '.')
     try:
         return float(val_str)
     except:
@@ -59,15 +61,20 @@ def calcular_leitura_absoluta(leitura_input, ultima_leitura_absoluta):
     base = int(ultima_leitura_absoluta // 100) * 100
     resto = ultima_leitura_absoluta % 100
     
-    if resto > 50 and leitura_input < 50:
+    # Nova Inteligência de Virada de Centena:
+    # Se a leitura digitada for menor que o resto (ex: era 93.5, foi para 68.5)
+    # e a diferença for considerável (maior que 1.0 para ignorar erros de digitação de centavos)
+    # Significa que o relógio virou a centena.
+    if leitura_input < resto and (resto - leitura_input) > 1.0:
         base += 100
         
     return float(base + leitura_input)
 
 def formatar_para_planilha(valor_float):
-    # Retorna o NÚMERO PURO (Float). Isso impede que o Sheets confunda vírgulas 
-    # com separador de milhar (Padrão US), que causou o bug dos milhares.
-    return round(float(valor_float), 3)
+    # Converte o número para STRING com vírgula (Padrão Brasileiro).
+    # Com "USER_ENTERED", o Sheets lerá isso e transformará num Número perfeito na planilha, sem multiplicar por mil.
+    valor_str = f"{valor_float:.3f}"
+    return valor_str.replace('.', ',')
 
 def update_configs(novas_configs_dict):
     planilha_config = get_worksheet_config()
