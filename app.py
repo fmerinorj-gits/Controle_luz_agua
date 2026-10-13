@@ -43,15 +43,13 @@ def safe_float(val):
         return 0.0
     if isinstance(val, (int, float)):
         return float(val)
-    # Pega o texto bruto e limpa espaços
     val_str = str(val).strip()
-    # Se o Google Sheets mandou número brasileiro (ex: 46.875,50 ou 46875,5)
-    if ',' in val_str and '.' in val_str:
-        val_str = val_str.replace('.', '') # Tira o ponto de milhar
-        val_str = val_str.replace(',', '.') # Transforma a vírgula decimal em ponto para o Python
-    elif ',' in val_str:
-        val_str = val_str.replace(',', '.') # Transforma a vírgula decimal em ponto para o Python
     
+    if ',' in val_str:
+        if '.' in val_str:
+            val_str = val_str.replace('.', '')
+        val_str = val_str.replace(',', '.')
+        
     try:
         return float(val_str)
     except:
@@ -64,14 +62,12 @@ def calcular_leitura_absoluta(leitura_input, ultima_leitura_absoluta):
     base = int(ultima_leitura_absoluta // 100) * 100
     resto = ultima_leitura_absoluta % 100
     
-    # Inteligência de Virada de Centena
-    if leitura_input < resto and (resto - leitura_input) > 1.0:
+    if leitura_input < resto:
         base += 100
         
     return float(base + leitura_input)
 
 def formatar_para_planilha(valor_float, eh_agua=False):
-    # Força a gravação como texto brasileiro puro para o Google Sheets entender
     if eh_agua:
         valor_str = f"{valor_float:.3f}"
     else:
@@ -80,31 +76,46 @@ def formatar_para_planilha(valor_float, eh_agua=False):
 
 def update_configs(novas_configs_dict):
     planilha_config = get_worksheet_config()
-    records = planilha_config.get_all_records()
-    existente = {str(row['Chave']): row['Valor'] for row in records if 'Chave' in row}
+    try:
+        # Lê como texto puro para evitar roubo de vírgulas
+        raw_config = planilha_config.get_values()
+        existente = {str(row[0]).strip(): row[1] for row in raw_config[1:] if len(row) >= 2}
+    except:
+        existente = {}
+        
     existente.update(novas_configs_dict)
+    
     lista_salvar = [["Chave", "Valor"]]
     for k, v in existente.items():
-        lista_salvar.append([k, v])
+        if isinstance(v, float):
+            if 'kwh' in k:
+                val_str = f"{v:.5f}".replace('.', ',')
+            else:
+                val_str = f"{v:.2f}".replace('.', ',')
+            lista_salvar.append([str(k), val_str])
+        elif isinstance(v, bool):
+            lista_salvar.append([str(k), "TRUE" if v else "FALSE"])
+        else:
+            lista_salvar.append([str(k), str(v)])
+            
     planilha_config.clear()
-    planilha_config.append_rows(lista_salvar)
+    planilha_config.append_rows(lista_salvar, value_input_option="USER_ENTERED")
 
 def calcular_dias(inicio_str, fim_str):
     try:
-        inicio = datetime.strptime(inicio_str, "%d/%m/%Y").date()
-        fim = datetime.strptime(fim_str, "%d/%m/%Y").date()
+        inicio = datetime.strptime(str(inicio_str).strip(), "%d/%m/%Y").date()
+        fim = datetime.strptime(str(fim_str).strip(), "%d/%m/%Y").date()
         total = (fim - inicio).days
         decorridos = (date.today() - inicio).days
         if decorridos <= 0: decorridos = 1
         if total <= 0: total = 30
         return total, decorridos
-    except:
+    except Exception:
         return 30, 1
 
 try:
     planilha_mes = get_worksheet_mes()
-    # A MÁGICA ACONTECE AQUI: Pegamos o texto puro, sem deixar a biblioteca tentar adivinhar o número
-    raw_values = planilha_mes.get_all_values() 
+    raw_values = planilha_mes.get_values(value_render_option='UNFORMATTED_VALUE') 
     if len(raw_values) > 1:
         df_mes = pd.DataFrame(raw_values[1:], columns=raw_values[0])
     else:
@@ -113,9 +124,14 @@ except Exception:
     df_mes = pd.DataFrame()
 
 try:
-    df_config = pd.DataFrame(get_worksheet_config().get_all_records())
-    config_dict = dict(zip(df_config['Chave'], df_config['Valor']))
-except:
+    # Nova leitura blindada de configurações
+    raw_config_data = get_worksheet_config().get_values()
+    config_dict = {}
+    if len(raw_config_data) > 1:
+        for row in raw_config_data[1:]:
+            if len(row) >= 2:
+                config_dict[str(row[0]).strip()] = str(row[1]).strip()
+except Exception:
     config_dict = {}
 
 kwh_frente = safe_float(config_dict.get('luz_kwh_frente', 0.0))
@@ -125,23 +141,27 @@ kwh_fundos = safe_float(config_dict.get('luz_kwh_fundos', 0.0))
 taxas_totais = (safe_float(config_dict.get('luz_pis', 0.0)) + safe_float(config_dict.get('luz_icms', 0.0)) +
                 safe_float(config_dict.get('luz_ilum', 0.0)) + safe_float(config_dict.get('luz_outros', 0.0)))
 
-aplica_frente = str(config_dict.get('luz_aplica_frente', 'True')).lower() == 'true'
-aplica_cem = str(config_dict.get('luz_aplica_cem', 'True')).lower() == 'true'
-aplica_fundos = str(config_dict.get('luz_aplica_fundos', 'True')).lower() == 'true'
+aplica_frente = str(config_dict.get('luz_aplica_frente', 'True')).upper() == 'TRUE'
+aplica_cem = str(config_dict.get('luz_aplica_cem', 'True')).upper() == 'TRUE'
+aplica_fundos = str(config_dict.get('luz_aplica_fundos', 'True')).upper() == 'TRUE'
 
-soc_frente = str(config_dict.get('luz_soc_frente', 'True')).lower() == 'true'
-soc_cem = str(config_dict.get('luz_soc_cem', 'True')).lower() == 'true'
-soc_fundos = str(config_dict.get('luz_soc_fundos', 'False')).lower() == 'true'
+soc_frente = str(config_dict.get('luz_soc_frente', 'True')).upper() == 'TRUE'
+soc_cem = str(config_dict.get('luz_soc_cem', 'True')).upper() == 'TRUE'
+soc_fundos = str(config_dict.get('luz_soc_fundos', 'False')).upper() == 'TRUE'
+
+agua_ini = config_dict.get('agua_inicio', '')
+if not agua_ini: agua_ini = config_dict.get('luz_inicio', '')
+agua_fim = config_dict.get('agua_fim', '')
+if not agua_fim: agua_fim = config_dict.get('luz_fim', '')
 
 dias_totais_luz, dias_decorridos_luz = calcular_dias(config_dict.get('luz_inicio', ''), config_dict.get('luz_fim', ''))
-dias_totais_agua, dias_decorridos_agua = calcular_dias(config_dict.get('agua_inicio', ''), config_dict.get('agua_fim', ''))
+dias_totais_agua, dias_decorridos_agua = calcular_dias(agua_ini, agua_fim)
 
 ultima_frente = ultima_cem = ultima_fundos = ultima_agua = 0.0
 c_ciclo_frente = c_ciclo_cem = c_ciclo_fundos = c_ciclo_agua = 0.0
 c_hoje_frente = c_hoje_cem = c_hoje_fundos = c_hoje_agua = 0.0
 
 if not df_mes.empty and len(df_mes) >= 1:
-    # Aplica o safe_float em tudo para garantir a conversão limpa
     df_mes['F_num'] = df_mes['Frente'].apply(safe_float)
     df_mes['C_num'] = df_mes['100'].apply(safe_float)
     df_mes['Fu_num'] = df_mes['Fundos'].apply(safe_float)
@@ -173,14 +193,14 @@ prev_agua = (c_ciclo_agua / dias_decorridos_agua) * dias_totais_agua if dias_dec
 def calcular_valor_fatura(projecao_kwh, valor_kwh, tem_taxas, tem_social):
     kwh_cobrado = projecao_kwh
     if tem_social:
-        kwh_cobrado = max(0.0, projecao_kwh - 80.0) # Isenta os primeiros 80 kWh
+        kwh_cobrado = max(0.0, projecao_kwh - 80.0) 
     
     total = kwh_cobrado * valor_kwh
     if tem_taxas: 
         total += taxas_totais
         
     if total < 50.0:
-        return 0.0 # Conta inferior a R$ 50 fica residual para próximo mês
+        return 0.0 
     return total
 
 rs_frente = calcular_valor_fatura(prev_frente, kwh_frente, aplica_frente, soc_frente)
@@ -197,13 +217,11 @@ if menu == "Registro Rápido":
     data_registro = st.date_input("Data da Leitura", value=date.today(), format="DD/MM/YYYY")
     data_str = data_registro.strftime("%d/%m/%Y")
 
-    # Inteligência de Auto-preenchimento
     f_def = c_def = fu_def = a_def = None
     if not df_mes.empty and 'Data' in df_mes.columns:
         linha_dia = df_mes[df_mes['Data'] == data_str]
         if not linha_dia.empty:
             try:
-                # Usa round para garantir que não apareçam dízimas gigantescas
                 f_def = round(safe_float(linha_dia['Frente'].iloc[0]) % 100, 2)
                 c_def = round(safe_float(linha_dia['100'].iloc[0]) % 100, 2)
                 fu_def = round(safe_float(linha_dia['Fundos'].iloc[0]) % 100, 2)
@@ -240,7 +258,6 @@ if menu == "Registro Rápido":
                 fu_abs_base = ultima_fundos
                 a_abs_base = ultima_agua
                 
-                # Se for uma data do passado, precisamos achar a base do dia anterior à ela
                 if not df_mes.empty and 'Data' in df_mes.columns:
                     df_temp = df_mes.copy()
                     df_temp['Data_Real'] = pd.to_datetime(df_temp['Data'], format='%d/%m/%Y', errors='coerce')
@@ -253,7 +270,6 @@ if menu == "Registro Rápido":
                         fu_abs_base = safe_float(anteriores['Fundos'].iloc[-1])
                         a_abs_base = safe_float(anteriores['Agua'].iloc[-1])
 
-                # Calcula os absolutos
                 f_abs = calcular_leitura_absoluta(frente_val, f_abs_base)
                 c_abs = calcular_leitura_absoluta(cem_val, c_abs_base)
                 fu_abs = calcular_leitura_absoluta(fundos_val, fu_abs_base)
@@ -347,7 +363,6 @@ elif menu == "Configuração de Ciclo":
             st.subheader("Período do Ciclo")
             c1, c2 = st.columns(2)
             with c1:
-                # Preenche com data existente se tiver
                 try: val_ini_luz = datetime.strptime(config_dict.get('luz_inicio', ''), "%d/%m/%Y").date()
                 except: val_ini_luz = None
                 inicio_luz = st.date_input("Início do Ciclo", value=val_ini_luz, format="DD/MM/YYYY")
