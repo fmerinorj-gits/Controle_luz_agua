@@ -43,12 +43,15 @@ def safe_float(val):
         return 0.0
     if isinstance(val, (int, float)):
         return float(val)
+    # Pega o texto bruto e limpa espaços
     val_str = str(val).strip()
+    # Se o Google Sheets mandou número brasileiro (ex: 46.875,50 ou 46875,5)
     if ',' in val_str and '.' in val_str:
-        val_str = val_str.replace('.', '')
-        val_str = val_str.replace(',', '.')
+        val_str = val_str.replace('.', '') # Tira o ponto de milhar
+        val_str = val_str.replace(',', '.') # Transforma a vírgula decimal em ponto para o Python
     elif ',' in val_str:
-        val_str = val_str.replace(',', '.')
+        val_str = val_str.replace(',', '.') # Transforma a vírgula decimal em ponto para o Python
+    
     try:
         return float(val_str)
     except:
@@ -61,19 +64,18 @@ def calcular_leitura_absoluta(leitura_input, ultima_leitura_absoluta):
     base = int(ultima_leitura_absoluta // 100) * 100
     resto = ultima_leitura_absoluta % 100
     
-    # Nova Inteligência de Virada de Centena:
-    # Se a leitura digitada for menor que o resto (ex: era 93.5, foi para 68.5)
-    # e a diferença for considerável (maior que 1.0 para ignorar erros de digitação de centavos)
-    # Significa que o relógio virou a centena.
+    # Inteligência de Virada de Centena
     if leitura_input < resto and (resto - leitura_input) > 1.0:
         base += 100
         
     return float(base + leitura_input)
 
-def formatar_para_planilha(valor_float):
-    # Converte o número para STRING com vírgula (Padrão Brasileiro).
-    # Com "USER_ENTERED", o Sheets lerá isso e transformará num Número perfeito na planilha, sem multiplicar por mil.
-    valor_str = f"{valor_float:.3f}"
+def formatar_para_planilha(valor_float, eh_agua=False):
+    # Força a gravação como texto brasileiro puro para o Google Sheets entender
+    if eh_agua:
+        valor_str = f"{valor_float:.3f}"
+    else:
+        valor_str = f"{valor_float:.2f}"
     return valor_str.replace('.', ',')
 
 def update_configs(novas_configs_dict):
@@ -101,7 +103,12 @@ def calcular_dias(inicio_str, fim_str):
 
 try:
     planilha_mes = get_worksheet_mes()
-    df_mes = pd.DataFrame(planilha_mes.get_all_records())
+    # A MÁGICA ACONTECE AQUI: Pegamos o texto puro, sem deixar a biblioteca tentar adivinhar o número
+    raw_values = planilha_mes.get_all_values() 
+    if len(raw_values) > 1:
+        df_mes = pd.DataFrame(raw_values[1:], columns=raw_values[0])
+    else:
+        df_mes = pd.DataFrame(columns=["Data", "Frente", "100", "Fundos", "Agua"])
 except Exception:
     df_mes = pd.DataFrame()
 
@@ -134,6 +141,7 @@ c_ciclo_frente = c_ciclo_cem = c_ciclo_fundos = c_ciclo_agua = 0.0
 c_hoje_frente = c_hoje_cem = c_hoje_fundos = c_hoje_agua = 0.0
 
 if not df_mes.empty and len(df_mes) >= 1:
+    # Aplica o safe_float em tudo para garantir a conversão limpa
     df_mes['F_num'] = df_mes['Frente'].apply(safe_float)
     df_mes['C_num'] = df_mes['100'].apply(safe_float)
     df_mes['Fu_num'] = df_mes['Fundos'].apply(safe_float)
@@ -165,7 +173,7 @@ prev_agua = (c_ciclo_agua / dias_decorridos_agua) * dias_totais_agua if dias_dec
 def calcular_valor_fatura(projecao_kwh, valor_kwh, tem_taxas, tem_social):
     kwh_cobrado = projecao_kwh
     if tem_social:
-        kwh_cobrado = max(0.0, projecao_kwh - 80.0)
+        kwh_cobrado = max(0.0, projecao_kwh - 80.0) # Isenta os primeiros 80 kWh
     
     total = kwh_cobrado * valor_kwh
     if tem_taxas: 
@@ -189,11 +197,13 @@ if menu == "Registro Rápido":
     data_registro = st.date_input("Data da Leitura", value=date.today(), format="DD/MM/YYYY")
     data_str = data_registro.strftime("%d/%m/%Y")
 
+    # Inteligência de Auto-preenchimento
     f_def = c_def = fu_def = a_def = None
     if not df_mes.empty and 'Data' in df_mes.columns:
         linha_dia = df_mes[df_mes['Data'] == data_str]
         if not linha_dia.empty:
             try:
+                # Usa round para garantir que não apareçam dízimas gigantescas
                 f_def = round(safe_float(linha_dia['Frente'].iloc[0]) % 100, 2)
                 c_def = round(safe_float(linha_dia['100'].iloc[0]) % 100, 2)
                 fu_def = round(safe_float(linha_dia['Fundos'].iloc[0]) % 100, 2)
@@ -201,7 +211,7 @@ if menu == "Registro Rápido":
             except:
                 pass
 
-    with st.form("form_leituras", clear_on_submit=True):
+    with st.form("form_leituras", clear_on_submit=False):
         st.markdown('<h3>Entradas:</h3>', unsafe_allow_html=True)
         st.caption("Luz: digite dezena, unidade e 2 decimais (ex: 25.03)")
         
@@ -230,6 +240,7 @@ if menu == "Registro Rápido":
                 fu_abs_base = ultima_fundos
                 a_abs_base = ultima_agua
                 
+                # Se for uma data do passado, precisamos achar a base do dia anterior à ela
                 if not df_mes.empty and 'Data' in df_mes.columns:
                     df_temp = df_mes.copy()
                     df_temp['Data_Real'] = pd.to_datetime(df_temp['Data'], format='%d/%m/%Y', errors='coerce')
@@ -241,14 +252,8 @@ if menu == "Registro Rápido":
                         c_abs_base = safe_float(anteriores['100'].iloc[-1])
                         fu_abs_base = safe_float(anteriores['Fundos'].iloc[-1])
                         a_abs_base = safe_float(anteriores['Agua'].iloc[-1])
-                    else:
-                        linha_atual = df_temp[df_temp['Data'] == data_str]
-                        if not linha_atual.empty:
-                            f_abs_base = safe_float(linha_atual['Frente'].iloc[0])
-                            c_abs_base = safe_float(linha_atual['100'].iloc[0])
-                            fu_abs_base = safe_float(linha_atual['Fundos'].iloc[0])
-                            a_abs_base = safe_float(linha_atual['Agua'].iloc[0])
 
+                # Calcula os absolutos
                 f_abs = calcular_leitura_absoluta(frente_val, f_abs_base)
                 c_abs = calcular_leitura_absoluta(cem_val, c_abs_base)
                 fu_abs = calcular_leitura_absoluta(fundos_val, fu_abs_base)
@@ -259,7 +264,7 @@ if menu == "Registro Rápido":
                     formatar_para_planilha(f_abs), 
                     formatar_para_planilha(c_abs), 
                     formatar_para_planilha(fu_abs), 
-                    formatar_para_planilha(a_abs)
+                    formatar_para_planilha(a_abs, eh_agua=True)
                 ]
                 
                 if not df_mes.empty and 'Data' in df_mes.columns:
@@ -342,39 +347,44 @@ elif menu == "Configuração de Ciclo":
             st.subheader("Período do Ciclo")
             c1, c2 = st.columns(2)
             with c1:
-                inicio_luz = st.date_input("Início do Ciclo", value=None, format="DD/MM/YYYY")
+                # Preenche com data existente se tiver
+                try: val_ini_luz = datetime.strptime(config_dict.get('luz_inicio', ''), "%d/%m/%Y").date()
+                except: val_ini_luz = None
+                inicio_luz = st.date_input("Início do Ciclo", value=val_ini_luz, format="DD/MM/YYYY")
             with c2:
-                fim_luz = st.date_input("Fim do Ciclo", value=None, format="DD/MM/YYYY")
+                try: val_fim_luz = datetime.strptime(config_dict.get('luz_fim', ''), "%d/%m/%Y").date()
+                except: val_fim_luz = None
+                fim_luz = st.date_input("Fim do Ciclo", value=val_fim_luz, format="DD/MM/YYYY")
                 
             st.subheader("Taxas da Fatura (R$)")
             t1, t2 = st.columns(2)
             with t1:
-                pis_luz = st.number_input("PIS/COFINS", value=0.0, format="%.2f", step=0.10)
-                icms_luz = st.number_input("ICMS", value=0.0, format="%.2f", step=0.10)
+                pis_luz = st.number_input("PIS/COFINS", value=safe_float(config_dict.get('luz_pis', 0.0)), format="%.2f", step=0.10)
+                icms_luz = st.number_input("ICMS", value=safe_float(config_dict.get('luz_icms', 0.0)), format="%.2f", step=0.10)
             with t2:
-                ilum_luz = st.number_input("Ilum. Pública", value=0.0, format="%.2f", step=0.10)
-                outras_luz = st.number_input("Outros", value=0.0, format="%.2f", step=0.10)
+                ilum_luz = st.number_input("Ilum. Pública", value=safe_float(config_dict.get('luz_ilum', 0.0)), format="%.2f", step=0.10)
+                outras_luz = st.number_input("Outros", value=safe_float(config_dict.get('luz_outros', 0.0)), format="%.2f", step=0.10)
                 
             st.subheader("Valor do kWh (R$)")
             k1, k2, k3 = st.columns(3)
             with k1:
-                k_frente = st.number_input("Frente (R$)", value=0.0, format="%.5f", step=0.01)
+                k_frente = st.number_input("Frente (R$)", value=safe_float(config_dict.get('luz_kwh_frente', 0.0)), format="%.5f", step=0.01)
             with k2:
-                k_cem = st.number_input("100 (R$)", value=0.0, format="%.5f", step=0.01)
+                k_cem = st.number_input("100 (R$)", value=safe_float(config_dict.get('luz_kwh_cem', 0.0)), format="%.5f", step=0.01)
             with k3:
-                k_fundos = st.number_input("Fundos (R$)", value=0.0, format="%.5f", step=0.01)
+                k_fundos = st.number_input("Fundos (R$)", value=safe_float(config_dict.get('luz_kwh_fundos', 0.0)), format="%.5f", step=0.01)
             
             st.write("Aplicar taxas a quais medidores?")
             col_a, col_b, col_c = st.columns(3)
-            with col_a: t_frente = st.checkbox("Frente", value=True)
-            with col_b: t_cem = st.checkbox("100", value=True)
-            with col_c: t_fundos = st.checkbox("Fundos", value=True)
+            with col_a: t_frente = st.checkbox("Frente", value=aplica_frente)
+            with col_b: t_cem = st.checkbox("100", value=aplica_cem)
+            with col_c: t_fundos = st.checkbox("Fundos", value=aplica_fundos)
                 
             st.write("Aplicar Tarifa Social (Isenção de 80kWh)?")
             col_sa, col_sb, col_sc = st.columns(3)
-            with col_sa: s_frente = st.checkbox("Frente (Social)", value=True)
-            with col_sb: s_cem = st.checkbox("100 (Social)", value=True)
-            with col_sc: s_fundos = st.checkbox("Fundos (Social)", value=False)
+            with col_sa: s_frente = st.checkbox("Frente (Social)", value=soc_frente)
+            with col_sb: s_cem = st.checkbox("100 (Social)", value=soc_cem)
+            with col_sc: s_fundos = st.checkbox("Fundos (Social)", value=soc_fundos)
                 
             submit_luz = st.form_submit_button("Salvar Ciclo da Luz", use_container_width=True)
             
@@ -398,9 +408,13 @@ elif menu == "Configuração de Ciclo":
             st.subheader("Período do Ciclo")
             c1, c2 = st.columns(2)
             with c1:
-                inicio_agua = st.date_input("Início do Ciclo", value=None, format="DD/MM/YYYY", key="inicio_agua")
+                try: val_ini_agua = datetime.strptime(config_dict.get('agua_inicio', ''), "%d/%m/%Y").date()
+                except: val_ini_agua = None
+                inicio_agua = st.date_input("Início do Ciclo", value=val_ini_agua, format="DD/MM/YYYY", key="inicio_agua")
             with c2:
-                fim_agua = st.date_input("Fim do Ciclo", value=None, format="DD/MM/YYYY", key="fim_agua")
+                try: val_fim_agua = datetime.strptime(config_dict.get('agua_fim', ''), "%d/%m/%Y").date()
+                except: val_fim_agua = None
+                fim_agua = st.date_input("Fim do Ciclo", value=val_fim_agua, format="DD/MM/YYYY", key="fim_agua")
             
             submit_agua = st.form_submit_button("Salvar Ciclo da Água", use_container_width=True)
             if submit_agua:
