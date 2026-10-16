@@ -57,15 +57,19 @@ def safe_float(val):
 
 def calcular_leitura_absoluta(leitura_input, ultima_leitura_absoluta):
     if ultima_leitura_absoluta <= 0.0:
-        return float(leitura_input)
+        return round(float(leitura_input), 3)
     
-    base = int(ultima_leitura_absoluta // 100) * 100
-    resto = ultima_leitura_absoluta % 100
+    # Se o usuário digitar a leitura completa (ex: 46904), usa ela diretamente
+    if leitura_input >= 100.0:
+        return round(float(leitura_input), 3)
     
-    if leitura_input < resto:
+    base = int(round(ultima_leitura_absoluta, 3) // 100) * 100
+    resto = round(ultima_leitura_absoluta % 100, 3)
+    
+    if round(float(leitura_input), 3) < resto:
         base += 100
         
-    return float(base + leitura_input)
+    return round(float(base + leitura_input), 3)
 
 def formatar_para_planilha(valor_float, eh_agua=False):
     if eh_agua:
@@ -77,7 +81,6 @@ def formatar_para_planilha(valor_float, eh_agua=False):
 def update_configs(novas_configs_dict):
     planilha_config = get_worksheet_config()
     try:
-        # Lê como texto puro para evitar roubo de vírgulas
         raw_config = planilha_config.get_values()
         existente = {str(row[0]).strip(): row[1] for row in raw_config[1:] if len(row) >= 2}
     except:
@@ -124,7 +127,6 @@ except Exception:
     df_mes = pd.DataFrame()
 
 try:
-    # Nova leitura blindada de configurações
     raw_config_data = get_worksheet_config().get_values()
     config_dict = {}
     if len(raw_config_data) > 1:
@@ -214,11 +216,32 @@ menu = st.sidebar.radio(
 
 if menu == "Registro Rápido":
     st.markdown('<h2 style="margin-bottom: 0px;">Registro Diário</h2>', unsafe_allow_html=True)
+    
+    if "msg_sucesso" in st.session_state:
+        st.success(st.session_state.pop("msg_sucesso"))
+    if "msg_alerta" in st.session_state:
+        st.warning(st.session_state.pop("msg_alerta"))
+
     data_registro = st.date_input("Data da Leitura", value=date.today(), format="DD/MM/YYYY")
     data_str = data_registro.strftime("%d/%m/%Y")
 
     f_def = c_def = fu_def = a_def = None
+    f_ant_base = ultima_frente
+    c_ant_base = ultima_cem
+    fu_ant_base = ultima_fundos
+    a_ant_base = ultima_agua
+
     if not df_mes.empty and 'Data' in df_mes.columns:
+        df_temp_ant = df_mes.copy()
+        df_temp_ant['Data_Real'] = pd.to_datetime(df_temp_ant['Data'], format='%d/%m/%Y', errors='coerce')
+        data_atual_dt = pd.to_datetime(data_str, format='%d/%m/%Y', errors='coerce')
+        anteriores_view = df_temp_ant[df_temp_ant['Data_Real'] < data_atual_dt].sort_values('Data_Real')
+        if not anteriores_view.empty:
+            f_ant_base = safe_float(anteriores_view['Frente'].iloc[-1])
+            c_ant_base = safe_float(anteriores_view['100'].iloc[-1])
+            fu_ant_base = safe_float(anteriores_view['Fundos'].iloc[-1])
+            a_ant_base = safe_float(anteriores_view['Agua'].iloc[-1])
+
         linha_dia = df_mes[df_mes['Data'] == data_str]
         if not linha_dia.empty:
             try:
@@ -229,21 +252,26 @@ if menu == "Registro Rápido":
             except:
                 pass
 
+    txt_ant_f = f" (Anterior: {f_ant_base % 100:05.2f})" if f_ant_base > 0 else ""
+    txt_ant_c = f" (Anterior: {c_ant_base % 100:05.2f})" if c_ant_base > 0 else ""
+    txt_ant_fu = f" (Anterior: {fu_ant_base % 100:05.2f})" if fu_ant_base > 0 else ""
+    txt_ant_a = f" (Anterior: {a_ant_base % 100:06.3f})" if a_ant_base > 0 else ""
+
     with st.form("form_leituras", clear_on_submit=False):
         st.markdown('<h3>Entradas:</h3>', unsafe_allow_html=True)
         st.caption("Luz: digite dezena, unidade e 2 decimais (ex: 25.03)")
         
-        st.markdown('Frente <span style="color:#778DA9;">- UC 3.960.531.059-96</span>', unsafe_allow_html=True)
+        st.markdown(f'Frente <span style="color:#778DA9;">- UC 3.960.531.059-96{txt_ant_f}</span>', unsafe_allow_html=True)
         frente_val = st.number_input("Frente", min_value=0.0, format="%.2f", step=0.5, label_visibility="collapsed", value=f_def, key=f"f_{data_str}")
         
-        st.markdown('100 <span style="color:#778DA9;">- UC 1.804.326.059-23</span>', unsafe_allow_html=True)
+        st.markdown(f'100 <span style="color:#778DA9;">- UC 1.804.326.059-23{txt_ant_c}</span>', unsafe_allow_html=True)
         cem_val = st.number_input("100", min_value=0.0, format="%.2f", step=0.5, label_visibility="collapsed", value=c_def, key=f"c_{data_str}")
         
-        st.markdown('Fundos <span style="color:#778DA9;">- UC 3.977.895.059-66</span>', unsafe_allow_html=True)
+        st.markdown(f'Fundos <span style="color:#778DA9;">- UC 3.977.895.059-66{txt_ant_fu}</span>', unsafe_allow_html=True)
         fundos_val = st.number_input("Fundos", min_value=0.0, format="%.2f", step=0.5, label_visibility="collapsed", value=fu_def, key=f"fu_{data_str}")
         
         st.caption("Água: digite dezena, unidade e 3 decimais (ex: 13.011)")
-        st.markdown('Água', unsafe_allow_html=True)
+        st.markdown(f'Água <span style="color:#778DA9;">{txt_ant_a}</span>', unsafe_allow_html=True)
         agua_input = st.number_input("Água", min_value=0.0, format="%.3f", step=0.001, label_visibility="collapsed", value=a_def, key=f"a_{data_str}")
 
         submitted = st.form_submit_button("Salvar Inteligente", use_container_width=True)
@@ -253,27 +281,10 @@ if menu == "Registro Rápido":
             st.warning("⚠️ Por favor, preencha todos os campos antes de salvar.")
         else:
             try:
-                f_abs_base = ultima_frente
-                c_abs_base = ultima_cem
-                fu_abs_base = ultima_fundos
-                a_abs_base = ultima_agua
-                
-                if not df_mes.empty and 'Data' in df_mes.columns:
-                    df_temp = df_mes.copy()
-                    df_temp['Data_Real'] = pd.to_datetime(df_temp['Data'], format='%d/%m/%Y', errors='coerce')
-                    data_atual_dt = pd.to_datetime(data_str, format='%d/%m/%Y', errors='coerce')
-                    
-                    anteriores = df_temp[df_temp['Data_Real'] < data_atual_dt].sort_values('Data_Real')
-                    if not anteriores.empty:
-                        f_abs_base = safe_float(anteriores['Frente'].iloc[-1])
-                        c_abs_base = safe_float(anteriores['100'].iloc[-1])
-                        fu_abs_base = safe_float(anteriores['Fundos'].iloc[-1])
-                        a_abs_base = safe_float(anteriores['Agua'].iloc[-1])
-
-                f_abs = calcular_leitura_absoluta(frente_val, f_abs_base)
-                c_abs = calcular_leitura_absoluta(cem_val, c_abs_base)
-                fu_abs = calcular_leitura_absoluta(fundos_val, fu_abs_base)
-                a_abs = calcular_leitura_absoluta(agua_input, a_abs_base)
+                f_abs = calcular_leitura_absoluta(frente_val, f_ant_base)
+                c_abs = calcular_leitura_absoluta(cem_val, c_ant_base)
+                fu_abs = calcular_leitura_absoluta(fundos_val, fu_ant_base)
+                a_abs = calcular_leitura_absoluta(agua_input, a_ant_base)
                 
                 linha_dados = [
                     data_str, 
@@ -283,18 +294,33 @@ if menu == "Registro Rápido":
                     formatar_para_planilha(a_abs, eh_agua=True)
                 ]
                 
+                alertas = []
+                if f_ant_base > 0 and (f_abs - f_ant_base) > 25.0:
+                    alertas.append(f"Frente subiu {f_abs - f_ant_base:.1f} kWh ({f_ant_base:.1f} → {f_abs:.1f})")
+                if c_ant_base > 0 and (c_abs - c_ant_base) > 25.0:
+                    alertas.append(f"100 subiu {c_abs - c_ant_base:.1f} kWh ({c_ant_base:.1f} → {c_abs:.1f})")
+                if fu_ant_base > 0 and (fu_abs - fu_ant_base) > 25.0:
+                    alertas.append(f"Fundos subiu {fu_abs - fu_ant_base:.1f} kWh ({fu_ant_base:.1f} → {fu_abs:.1f})")
+                if a_ant_base > 0 and (a_abs - a_ant_base) > 5.0:
+                    alertas.append(f"Água subiu {a_abs - a_ant_base:.3f} m³ ({a_ant_base:.3f} → {a_abs:.3f})")
+
+                if alertas:
+                    st.session_state["msg_alerta"] = "⚠️ Consumo atípico detectado (verifique se houve erro de digitação): " + " | ".join(alertas)
+
                 if not df_mes.empty and 'Data' in df_mes.columns:
                     indices_encontrados = df_mes.index[df_mes['Data'] == data_str].tolist()
                     if indices_encontrados:
                         linha_planilha = indices_encontrados[0] + 2
-                        planilha_mes.update(values=[linha_dados], range_name=f"A{linha_planilha}:E{linha_planilha}")
-                        st.success(f"✅ Dados ATUALIZADOS para o dia {data_str}!")
+                        planilha_mes.update(values=[linha_dados], range_name=f"A{linha_planilha}:E{linha_planilha}", value_input_option="USER_ENTERED")
+                        st.session_state["msg_sucesso"] = f"✅ Dados ATUALIZADOS para o dia {data_str}!"
                     else:
                         planilha_mes.append_row(linha_dados, value_input_option="USER_ENTERED")
-                        st.success(f"✅ Novos dados SALVOS para o dia {data_str}!")
+                        st.session_state["msg_sucesso"] = f"✅ Novos dados SALVOS para o dia {data_str}!"
                 else:
                     planilha_mes.append_row(linha_dados, value_input_option="USER_ENTERED")
-                    st.success("✅ Novos dados SALVOS!")
+                    st.session_state["msg_sucesso"] = "✅ Novos dados SALVOS!"
+                
+                st.rerun()
             except Exception as e:
                 st.error(f"⚠️ Erro ao salvar: {e}")
 
