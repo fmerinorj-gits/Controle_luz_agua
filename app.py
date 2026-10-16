@@ -1,10 +1,15 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 from datetime import datetime, date
 import gspread
 from google.oauth2.service_account import Credentials
 
-st.set_page_config(page_title="Controle Luz & Água", layout="centered", initial_sidebar_state="collapsed")
+st.set_page_config(
+    page_title="Controle Luz & Água",
+    layout="centered",
+    initial_sidebar_state="collapsed"
+)
 
 @st.cache_resource
 def get_gspread_client():
@@ -16,27 +21,94 @@ def get_gspread_client():
     credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     return gspread.authorize(credentials)
 
-def get_spreadsheet():
-    return get_gspread_client().open("Controle Luz 2026")
-
-def get_worksheet_mes():
-    spreadsheet = get_spreadsheet()
-    mes_ano = datetime.now().strftime("%m %Y")
+def get_spreadsheet_por_ano(ano_str=None):
+    client = get_gspread_client()
+    if not ano_str:
+        ano_str = datetime.now().strftime("%Y")
+    nome_alvo = f"Controle Luz {ano_str}"
     try:
-        sheet = spreadsheet.worksheet(mes_ano)
-    except gspread.WorksheetNotFound:
-        sheet = spreadsheet.add_worksheet(title=mes_ano, rows="100", cols="10")
-        sheet.append_row(["Data", "Frente", "100", "Fundos", "Agua"])
-    return sheet
+        return client.open(nome_alvo)
+    except gspread.SpreadsheetNotFound:
+        return client.open("Controle Luz 2026")
 
 def get_worksheet_config():
-    spreadsheet = get_spreadsheet()
+    ano_atual = datetime.now().strftime("%Y")
+    spreadsheet = get_spreadsheet_por_ano(ano_atual)
     try:
         sheet = spreadsheet.worksheet("Configuracoes")
     except gspread.WorksheetNotFound:
-        sheet = spreadsheet.add_worksheet(title="Configuracoes", rows="50", cols="2")
+        sheet = spreadsheet.add_worksheet(title="Configuracoes", rows="100", cols="2")
         sheet.append_row(["Chave", "Valor"])
+        # Tenta importar configurações do ano anterior caso seja planilha nova de ano novo
+        try:
+            sp_ant = get_spreadsheet_por_ano(str(int(ano_atual) - 1))
+            vals_ant = sp_ant.worksheet("Configuracoes").get_values()
+            if len(vals_ant) > 1:
+                sheet.clear()
+                sheet.append_rows(vals_ant, value_input_option="USER_ENTERED")
+        except Exception:
+            pass
     return sheet
+
+def extrair_mes_ano_ciclo(data_fim_str):
+    try:
+        dt = datetime.strptime(str(data_fim_str).strip(), "%d/%m/%Y")
+        return dt.strftime("%m %Y"), dt.strftime("%Y")
+    except Exception:
+        agora = datetime.now()
+        return agora.strftime("%m %Y"), agora.strftime("%Y")
+
+def criar_aba_no_inicio(spreadsheet, titulo, linhas="100", colunas="10"):
+    try:
+        return spreadsheet.add_worksheet(title=titulo, rows=linhas, cols=colunas, index=0)
+    except TypeError:
+        return spreadsheet.add_worksheet(title=titulo, rows=linhas, cols=colunas)
+
+def obter_aba_luz(mes_ano_str, ano_str):
+    spreadsheet = get_spreadsheet_por_ano(ano_str)
+    titulo_aba = f"{mes_ano_str} Luz"
+    try:
+        return spreadsheet.worksheet(titulo_aba)
+    except gspread.WorksheetNotFound:
+        sheet = criar_aba_no_inicio(spreadsheet, titulo_aba, linhas="100", colunas="6")
+        sheet.append_row(["Data", "Frente", "100", "Fundos"])
+        # Migração automática caso exista a aba unificada antiga (ex: "10 2026")
+        try:
+            aba_antiga = spreadsheet.worksheet(mes_ano_str)
+            vals_antigos = aba_antiga.get_values()
+            if len(vals_antigos) > 1:
+                linhas_migrar = []
+                for r in vals_antigos[1:]:
+                    if len(r) >= 4:
+                        linhas_migrar.append([r[0], r[1], r[2], r[3]])
+                if linhas_migrar:
+                    sheet.append_rows(linhas_migrar, value_input_option="USER_ENTERED")
+        except Exception:
+            pass
+        return sheet
+
+def obter_aba_agua(mes_ano_str, ano_str):
+    spreadsheet = get_spreadsheet_por_ano(ano_str)
+    titulo_aba = f"{mes_ano_str} Agua"
+    try:
+        return spreadsheet.worksheet(titulo_aba)
+    except gspread.WorksheetNotFound:
+        sheet = criar_aba_no_inicio(spreadsheet, titulo_aba, linhas="100", colunas="4")
+        sheet.append_row(["Data", "Agua"])
+        # Migração automática caso exista a aba unificada antiga (ex: "10 2026")
+        try:
+            aba_antiga = spreadsheet.worksheet(mes_ano_str)
+            vals_antigos = aba_antiga.get_values()
+            if len(vals_antigos) > 1:
+                linhas_migrar = []
+                for r in vals_antigos[1:]:
+                    if len(r) >= 5:
+                        linhas_migrar.append([r[0], r[4]])
+                if linhas_migrar:
+                    sheet.append_rows(linhas_migrar, value_input_option="USER_ENTERED")
+        except Exception:
+            pass
+        return sheet
 
 def safe_float(val):
     if pd.isna(val) or val is None or val == "":
@@ -52,14 +124,13 @@ def safe_float(val):
         
     try:
         return float(val_str)
-    except:
+    except Exception:
         return 0.0
 
 def calcular_leitura_absoluta(leitura_input, ultima_leitura_absoluta):
     if ultima_leitura_absoluta <= 0.0:
         return round(float(leitura_input), 3)
     
-    # Se o usuário digitar a leitura completa (ex: 46904), usa ela diretamente
     if leitura_input >= 100.0:
         return round(float(leitura_input), 3)
     
@@ -83,7 +154,7 @@ def update_configs(novas_configs_dict):
     try:
         raw_config = planilha_config.get_values()
         existente = {str(row[0]).strip(): row[1] for row in raw_config[1:] if len(row) >= 2}
-    except:
+    except Exception:
         existente = {}
         
     existente.update(novas_configs_dict)
@@ -109,22 +180,39 @@ def calcular_dias(inicio_str, fim_str):
         inicio = datetime.strptime(str(inicio_str).strip(), "%d/%m/%Y").date()
         fim = datetime.strptime(str(fim_str).strip(), "%d/%m/%Y").date()
         total = (fim - inicio).days
+        if total <= 0:
+            total = 30
         decorridos = (date.today() - inicio).days
-        if decorridos <= 0: decorridos = 1
-        if total <= 0: total = 30
+        if decorridos <= 0:
+            decorridos = 1
+        elif decorridos > total:
+            decorridos = total
         return total, decorridos
     except Exception:
         return 30, 1
 
-try:
-    planilha_mes = get_worksheet_mes()
-    raw_values = planilha_mes.get_values() 
-    if len(raw_values) > 1:
-        df_mes = pd.DataFrame(raw_values[1:], columns=raw_values[0])
-    else:
-        df_mes = pd.DataFrame(columns=["Data", "Frente", "100", "Fundos", "Agua"])
-except Exception:
-    df_mes = pd.DataFrame()
+def calcular_valor_fatura(projecao_kwh, valor_kwh, taxas_totais_ciclo, tem_taxas, tem_social):
+    kwh_cobrado = projecao_kwh
+    if tem_social:
+        kwh_cobrado = max(0.0, projecao_kwh - 80.0)
+    
+    total = kwh_cobrado * valor_kwh
+    if tem_taxas:
+        total += taxas_totais_ciclo
+        
+    if total < 50.0:
+        return 0.0
+    return total
+
+def obter_cfg_ciclo(cfg_dict, mes_ano, chave_base, padrao="", usar_ativo=True):
+    chave_hist = f"hist_{mes_ano}_{chave_base}"
+    if not usar_ativo and chave_hist in cfg_dict:
+        return cfg_dict[chave_hist]
+    if chave_base in cfg_dict and usar_ativo:
+        return cfg_dict[chave_base]
+    if chave_hist in cfg_dict:
+        return cfg_dict[chave_hist]
+    return cfg_dict.get(chave_base, padrao)
 
 try:
     raw_config_data = get_worksheet_config().get_values()
@@ -136,86 +224,140 @@ try:
 except Exception:
     config_dict = {}
 
-kwh_frente = safe_float(config_dict.get('luz_kwh_frente', 0.0))
-kwh_cem = safe_float(config_dict.get('luz_kwh_cem', 0.0))
-kwh_fundos = safe_float(config_dict.get('luz_kwh_fundos', 0.0))
+luz_ini_cfg = config_dict.get('luz_inicio', '')
+luz_fim_cfg = config_dict.get('luz_fim', '')
+agua_ini_cfg = config_dict.get('agua_inicio', '') or luz_ini_cfg
+agua_fim_cfg = config_dict.get('agua_fim', '') or luz_fim_cfg
 
-taxas_totais = (safe_float(config_dict.get('luz_pis', 0.0)) + safe_float(config_dict.get('luz_icms', 0.0)) +
-                safe_float(config_dict.get('luz_ilum', 0.0)) + safe_float(config_dict.get('luz_outros', 0.0)))
+mes_ano_luz, ano_luz = extrair_mes_ano_ciclo(luz_fim_cfg)
+mes_ano_agua, ano_agua = extrair_mes_ano_ciclo(agua_fim_cfg)
 
-aplica_frente = str(config_dict.get('luz_aplica_frente', 'True')).upper() == 'TRUE'
-aplica_cem = str(config_dict.get('luz_aplica_cem', 'True')).upper() == 'TRUE'
-aplica_fundos = str(config_dict.get('luz_aplica_fundos', 'True')).upper() == 'TRUE'
+try:
+    planilha_luz = obter_aba_luz(mes_ano_luz, ano_luz)
+    raw_luz = planilha_luz.get_values()
+    if len(raw_luz) > 1:
+        df_luz = pd.DataFrame(raw_luz[1:], columns=raw_luz[0])
+    else:
+        df_luz = pd.DataFrame(columns=["Data", "Frente", "100", "Fundos"])
+except Exception:
+    df_luz = pd.DataFrame(columns=["Data", "Frente", "100", "Fundos"])
 
-soc_frente = str(config_dict.get('luz_soc_frente', 'True')).upper() == 'TRUE'
-soc_cem = str(config_dict.get('luz_soc_cem', 'True')).upper() == 'TRUE'
-soc_fundos = str(config_dict.get('luz_soc_fundos', 'False')).upper() == 'TRUE'
+try:
+    planilha_agua = obter_aba_agua(mes_ano_agua, ano_agua)
+    raw_agua = planilha_agua.get_values()
+    if len(raw_agua) > 1:
+        df_agua = pd.DataFrame(raw_agua[1:], columns=raw_agua[0])
+    else:
+        df_agua = pd.DataFrame(columns=["Data", "Agua"])
+except Exception:
+    df_agua = pd.DataFrame(columns=["Data", "Agua"])
 
-agua_ini = config_dict.get('agua_inicio', '')
-if not agua_ini: agua_ini = config_dict.get('luz_inicio', '')
-agua_fim = config_dict.get('agua_fim', '')
-if not agua_fim: agua_fim = config_dict.get('luz_fim', '')
+kwh_frente = safe_float(obter_cfg_ciclo(config_dict, mes_ano_luz, 'luz_kwh_frente', 0.0))
+kwh_cem = safe_float(obter_cfg_ciclo(config_dict, mes_ano_luz, 'luz_kwh_cem', 0.0))
+kwh_fundos = safe_float(obter_cfg_ciclo(config_dict, mes_ano_luz, 'luz_kwh_fundos', 0.0))
 
-dias_totais_luz, dias_decorridos_luz = calcular_dias(config_dict.get('luz_inicio', ''), config_dict.get('luz_fim', ''))
-dias_totais_agua, dias_decorridos_agua = calcular_dias(agua_ini, agua_fim)
+taxas_totais = (
+    safe_float(obter_cfg_ciclo(config_dict, mes_ano_luz, 'luz_pis', 0.0)) +
+    safe_float(obter_cfg_ciclo(config_dict, mes_ano_luz, 'luz_icms', 0.0)) +
+    safe_float(obter_cfg_ciclo(config_dict, mes_ano_luz, 'luz_ilum', 0.0)) +
+    safe_float(obter_cfg_ciclo(config_dict, mes_ano_luz, 'luz_outros', 0.0))
+)
+
+aplica_frente = str(obter_cfg_ciclo(config_dict, mes_ano_luz, 'luz_aplica_frente', 'True')).upper() == 'TRUE'
+aplica_cem = str(obter_cfg_ciclo(config_dict, mes_ano_luz, 'luz_aplica_cem', 'True')).upper() == 'TRUE'
+aplica_fundos = str(obter_cfg_ciclo(config_dict, mes_ano_luz, 'luz_aplica_fundos', 'True')).upper() == 'TRUE'
+
+soc_frente = str(obter_cfg_ciclo(config_dict, mes_ano_luz, 'luz_soc_frente', 'True')).upper() == 'TRUE'
+soc_cem = str(obter_cfg_ciclo(config_dict, mes_ano_luz, 'luz_soc_cem', 'True')).upper() == 'TRUE'
+soc_fundos = str(obter_cfg_ciclo(config_dict, mes_ano_luz, 'luz_soc_fundos', 'False')).upper() == 'TRUE'
+
+dias_totais_luz, dias_decorridos_luz = calcular_dias(luz_ini_cfg, luz_fim_cfg)
+dias_totais_agua, dias_decorridos_agua = calcular_dias(agua_ini_cfg, agua_fim_cfg)
 
 ultima_frente = ultima_cem = ultima_fundos = ultima_agua = 0.0
 c_ciclo_frente = c_ciclo_cem = c_ciclo_fundos = c_ciclo_agua = 0.0
 c_hoje_frente = c_hoje_cem = c_hoje_fundos = c_hoje_agua = 0.0
 
-if not df_mes.empty and len(df_mes) >= 1:
-    df_mes['F_num'] = df_mes['Frente'].apply(safe_float)
-    df_mes['C_num'] = df_mes['100'].apply(safe_float)
-    df_mes['Fu_num'] = df_mes['Fundos'].apply(safe_float)
-    df_mes['A_num'] = df_mes['Agua'].apply(safe_float)
+if not df_luz.empty and len(df_luz) >= 1:
+    df_luz['F_num'] = df_luz['Frente'].apply(safe_float)
+    df_luz['C_num'] = df_luz['100'].apply(safe_float)
+    df_luz['Fu_num'] = df_luz['Fundos'].apply(safe_float)
     
-    ultima_frente = df_mes['F_num'].iloc[-1]
-    ultima_cem = df_mes['C_num'].iloc[-1]
-    ultima_fundos = df_mes['Fu_num'].iloc[-1]
-    ultima_agua = df_mes['A_num'].iloc[-1]
+    ultima_frente = df_luz['F_num'].iloc[-1]
+    ultima_cem = df_luz['C_num'].iloc[-1]
+    ultima_fundos = df_luz['Fu_num'].iloc[-1]
     
-    c_ciclo_frente = ultima_frente - df_mes['F_num'].iloc[0]
-    c_ciclo_cem = ultima_cem - df_mes['C_num'].iloc[0]
-    c_ciclo_fundos = ultima_fundos - df_mes['Fu_num'].iloc[0]
-    c_ciclo_agua = ultima_agua - df_mes['A_num'].iloc[0]
+    c_ciclo_frente = ultima_frente - df_luz['F_num'].iloc[0]
+    c_ciclo_cem = ultima_cem - df_luz['C_num'].iloc[0]
+    c_ciclo_fundos = ultima_fundos - df_luz['Fu_num'].iloc[0]
     
-    if len(df_mes) >= 2:
-        c_hoje_frente = ultima_frente - df_mes['F_num'].iloc[-2]
-        c_hoje_cem = ultima_cem - df_mes['C_num'].iloc[-2]
-        c_hoje_fundos = ultima_fundos - df_mes['Fu_num'].iloc[-2]
-        c_hoje_agua = ultima_agua - df_mes['A_num'].iloc[-2]
+    if len(df_luz) >= 2:
+        c_hoje_frente = ultima_frente - df_luz['F_num'].iloc[-2]
+        c_hoje_cem = ultima_cem - df_luz['C_num'].iloc[-2]
+        c_hoje_fundos = ultima_fundos - df_luz['Fu_num'].iloc[-2]
     else:
-        c_hoje_frente, c_hoje_cem, c_hoje_fundos, c_hoje_agua = c_ciclo_frente, c_ciclo_cem, c_ciclo_fundos, c_ciclo_agua
+        c_hoje_frente, c_hoje_cem, c_hoje_fundos = c_ciclo_frente, c_ciclo_cem, c_ciclo_fundos
+
+if not df_agua.empty and len(df_agua) >= 1:
+    df_agua['A_num'] = df_agua['Agua'].apply(safe_float)
+    ultima_agua = df_agua['A_num'].iloc[-1]
+    c_ciclo_agua = ultima_agua - df_agua['A_num'].iloc[0]
+    if len(df_agua) >= 2:
+        c_hoje_agua = ultima_agua - df_agua['A_num'].iloc[-2]
+    else:
+        c_hoje_agua = c_ciclo_agua
 
 prev_frente = (c_ciclo_frente / dias_decorridos_luz) * dias_totais_luz if dias_decorridos_luz > 0 else 0.0
 prev_cem = (c_ciclo_cem / dias_decorridos_luz) * dias_totais_luz if dias_decorridos_luz > 0 else 0.0
 prev_fundos = (c_ciclo_fundos / dias_decorridos_luz) * dias_totais_luz if dias_decorridos_luz > 0 else 0.0
 prev_agua = (c_ciclo_agua / dias_decorridos_agua) * dias_totais_agua if dias_decorridos_agua > 0 else 0.0
 
-def calcular_valor_fatura(projecao_kwh, valor_kwh, tem_taxas, tem_social):
-    kwh_cobrado = projecao_kwh
-    if tem_social:
-        kwh_cobrado = max(0.0, projecao_kwh - 80.0) 
-    
-    total = kwh_cobrado * valor_kwh
-    if tem_taxas: 
-        total += taxas_totais
-        
-    if total < 50.0:
-        return 0.0 
-    return total
+rs_frente = calcular_valor_fatura(prev_frente, kwh_frente, taxas_totais, aplica_frente, soc_frente)
+rs_cem = calcular_valor_fatura(prev_cem, kwh_cem, taxas_totais, aplica_cem, soc_cem)
+rs_fundos = calcular_valor_fatura(prev_fundos, kwh_fundos, taxas_totais, aplica_fundos, soc_fundos)
 
-rs_frente = calcular_valor_fatura(prev_frente, kwh_frente, aplica_frente, soc_frente)
-rs_cem = calcular_valor_fatura(prev_cem, kwh_cem, aplica_cem, soc_cem)
-rs_fundos = calcular_valor_fatura(prev_fundos, kwh_fundos, aplica_fundos, soc_fundos)
+if "recolher_menu" not in st.session_state:
+    st.session_state["recolher_menu"] = 0
+
+def acionar_fechamento_menu():
+    st.session_state["recolher_menu"] += 1
 
 menu = st.sidebar.radio(
     "Navegação",
-    ["Registro Rápido", "Visão Geral", "Frente", "100", "Fundos", "Água", "Configuração de Ciclo"]
+    ["Registro Diário", "Visão Geral", "Frente", "100", "Fundos", "Água", "Configuração de Ciclo"],
+    on_change=acionar_fechamento_menu
 )
 
-if menu == "Registro Rápido":
+if st.session_state["recolher_menu"] > 0:
+    components.html(
+        f"""
+        <script>
+        // Executa fechamento automático da barra lateral ao trocar de opção ({st.session_state["recolher_menu"]})
+        (function() {{
+            try {{
+                const doc = window.parent.document;
+                const sidebar = doc.querySelector('section[data-testid="stSidebar"][aria-expanded="true"]');
+                if (sidebar) {{
+                    const btn = sidebar.querySelector('[data-testid="stSidebarCollapseButton"] button')
+                             || sidebar.querySelector('[data-testid="stSidebarHeader"] button')
+                             || sidebar.querySelector('button[kind="headerNoPadding"]')
+                             || sidebar.querySelector('button[kind="header"]')
+                             || sidebar.querySelector('button');
+                    if (btn) {{
+                        btn.click();
+                    }}
+                }}
+            }} catch (e) {{}}
+        }})();
+        </script>
+        """,
+        height=0,
+        width=0
+    )
+
+if menu == "Registro Diário":
     st.markdown('<h2 style="margin-bottom: 0px;">Registro Diário</h2>', unsafe_allow_html=True)
+    st.caption(f"⚡ Guia Luz: **{mes_ano_luz} Luz** | 💧 Guia Água: **{mes_ano_agua} Agua**")
     
     if "msg_sucesso" in st.session_state:
         st.success(st.session_state.pop("msg_sucesso"))
@@ -231,25 +373,39 @@ if menu == "Registro Rápido":
     fu_ant_base = ultima_fundos
     a_ant_base = ultima_agua
 
-    if not df_mes.empty and 'Data' in df_mes.columns:
-        df_temp_ant = df_mes.copy()
-        df_temp_ant['Data_Real'] = pd.to_datetime(df_temp_ant['Data'], format='%d/%m/%Y', errors='coerce')
+    # Busca base anterior e valores do dia para a LUZ
+    if not df_luz.empty and 'Data' in df_luz.columns:
+        df_temp_luz = df_luz.copy()
+        df_temp_luz['Data_Real'] = pd.to_datetime(df_temp_luz['Data'], format='%d/%m/%Y', errors='coerce')
         data_atual_dt = pd.to_datetime(data_str, format='%d/%m/%Y', errors='coerce')
-        anteriores_view = df_temp_ant[df_temp_ant['Data_Real'] < data_atual_dt].sort_values('Data_Real')
-        if not anteriores_view.empty:
-            f_ant_base = safe_float(anteriores_view['Frente'].iloc[-1])
-            c_ant_base = safe_float(anteriores_view['100'].iloc[-1])
-            fu_ant_base = safe_float(anteriores_view['Fundos'].iloc[-1])
-            a_ant_base = safe_float(anteriores_view['Agua'].iloc[-1])
+        ant_luz = df_temp_luz[df_temp_luz['Data_Real'] < data_atual_dt].sort_values('Data_Real')
+        if not ant_luz.empty:
+            f_ant_base = safe_float(ant_luz['Frente'].iloc[-1])
+            c_ant_base = safe_float(ant_luz['100'].iloc[-1])
+            fu_ant_base = safe_float(ant_luz['Fundos'].iloc[-1])
 
-        linha_dia = df_mes[df_mes['Data'] == data_str]
-        if not linha_dia.empty:
+        linha_dia_luz = df_luz[df_luz['Data'] == data_str]
+        if not linha_dia_luz.empty:
             try:
-                f_def = round(safe_float(linha_dia['Frente'].iloc[0]) % 100, 2)
-                c_def = round(safe_float(linha_dia['100'].iloc[0]) % 100, 2)
-                fu_def = round(safe_float(linha_dia['Fundos'].iloc[0]) % 100, 2)
-                a_def = round(safe_float(linha_dia['Agua'].iloc[0]) % 100, 3)
-            except:
+                f_def = round(safe_float(linha_dia_luz['Frente'].iloc[0]) % 100, 2)
+                c_def = round(safe_float(linha_dia_luz['100'].iloc[0]) % 100, 2)
+                fu_def = round(safe_float(linha_dia_luz['Fundos'].iloc[0]) % 100, 2)
+            except Exception:
+                pass
+
+    if not df_agua.empty and 'Data' in df_agua.columns:
+        df_temp_agua = df_agua.copy()
+        df_temp_agua['Data_Real'] = pd.to_datetime(df_temp_agua['Data'], format='%d/%m/%Y', errors='coerce')
+        data_atual_dt = pd.to_datetime(data_str, format='%d/%m/%Y', errors='coerce')
+        ant_agua = df_temp_agua[df_temp_agua['Data_Real'] < data_atual_dt].sort_values('Data_Real')
+        if not ant_agua.empty:
+            a_ant_base = safe_float(ant_agua['Agua'].iloc[-1])
+
+        linha_dia_agua = df_agua[df_agua['Data'] == data_str]
+        if not linha_dia_agua.empty:
+            try:
+                a_def = round(safe_float(linha_dia_agua['Agua'].iloc[0]) % 100, 3)
+            except Exception:
                 pass
 
     txt_ant_f = f" (Anterior: {f_ant_base % 100:05.2f})" if f_ant_base > 0 else ""
@@ -286,11 +442,14 @@ if menu == "Registro Rápido":
                 fu_abs = calcular_leitura_absoluta(fundos_val, fu_ant_base)
                 a_abs = calcular_leitura_absoluta(agua_input, a_ant_base)
                 
-                linha_dados = [
+                linha_luz = [
                     data_str, 
                     formatar_para_planilha(f_abs), 
                     formatar_para_planilha(c_abs), 
-                    formatar_para_planilha(fu_abs), 
+                    formatar_para_planilha(fu_abs)
+                ]
+                linha_agua = [
+                    data_str,
                     formatar_para_planilha(a_abs, eh_agua=True)
                 ]
                 
@@ -307,25 +466,36 @@ if menu == "Registro Rápido":
                 if alertas:
                     st.session_state["msg_alerta"] = "⚠️ Consumo atípico detectado (verifique se houve erro de digitação): " + " | ".join(alertas)
 
-                if not df_mes.empty and 'Data' in df_mes.columns:
-                    indices_encontrados = df_mes.index[df_mes['Data'] == data_str].tolist()
-                    if indices_encontrados:
-                        linha_planilha = indices_encontrados[0] + 2
-                        planilha_mes.update(values=[linha_dados], range_name=f"A{linha_planilha}:E{linha_planilha}", value_input_option="USER_ENTERED")
-                        st.session_state["msg_sucesso"] = f"✅ Dados ATUALIZADOS para o dia {data_str}!"
+                # Salva na guia de Luz ativa
+                if not df_luz.empty and 'Data' in df_luz.columns:
+                    idx_luz = df_luz.index[df_luz['Data'] == data_str].tolist()
+                    if idx_luz:
+                        linha_p = idx_luz[0] + 2
+                        planilha_luz.update(values=[linha_luz], range_name=f"A{linha_p}:D{linha_p}", value_input_option="USER_ENTERED")
                     else:
-                        planilha_mes.append_row(linha_dados, value_input_option="USER_ENTERED")
-                        st.session_state["msg_sucesso"] = f"✅ Novos dados SALVOS para o dia {data_str}!"
+                        planilha_luz.append_row(linha_luz, value_input_option="USER_ENTERED")
                 else:
-                    planilha_mes.append_row(linha_dados, value_input_option="USER_ENTERED")
-                    st.session_state["msg_sucesso"] = "✅ Novos dados SALVOS!"
-                
+                    planilha_luz.append_row(linha_luz, value_input_option="USER_ENTERED")
+
+                # Salva na guia de Água ativa
+                if not df_agua.empty and 'Data' in df_agua.columns:
+                    idx_agua = df_agua.index[df_agua['Data'] == data_str].tolist()
+                    if idx_agua:
+                        linha_pa = idx_agua[0] + 2
+                        planilha_agua.update(values=[linha_agua], range_name=f"A{linha_pa}:B{linha_pa}", value_input_option="USER_ENTERED")
+                    else:
+                        planilha_agua.append_row(linha_agua, value_input_option="USER_ENTERED")
+                else:
+                    planilha_agua.append_row(linha_agua, value_input_option="USER_ENTERED")
+
+                st.session_state["msg_sucesso"] = f"✅ Dados SALVOS para o dia {data_str} (Luz: {mes_ano_luz} | Água: {mes_ano_agua})!"
                 st.rerun()
             except Exception as e:
                 st.error(f"⚠️ Erro ao salvar: {e}")
 
 elif menu in ["Frente", "100", "Fundos"]:
     st.markdown(f'<h2 style="margin-bottom: 0px;">⚡ {menu}</h2>', unsafe_allow_html=True)
+    st.caption(f"Guia ativa: {mes_ano_luz} Luz")
     
     meta_ideal_diaria = 150.0 / dias_totais_luz if dias_totais_luz > 0 else 5.0
     
@@ -349,6 +519,7 @@ elif menu in ["Frente", "100", "Fundos"]:
 
 elif menu == "Água":
     st.markdown('<h2 style="margin-bottom: 0px;">💧 Água</h2>', unsafe_allow_html=True)
+    st.caption(f"Guia ativa: {mes_ano_agua} Agua")
     st.metric("Leitura Consolidada", f"{ultima_agua:.3f} m³")
     
     meta_maxima_agua = 15.0
@@ -366,35 +537,149 @@ elif menu == "Água":
 
 elif menu == "Visão Geral":
     st.markdown('<h2 style="margin-bottom: 0px;">📊 Resumo do Ciclo</h2>', unsafe_allow_html=True)
-    periodo_str = f"{config_dict.get('luz_inicio', '...')} a {config_dict.get('luz_fim', '...')}"
-    st.caption(f"Período da Fatura: {periodo_str} ({dias_decorridos_luz} dias decorridos)")
     
-    st.markdown(f"""
-    | Medidor | Consumo Atual | Previsão | Prev. R$ |
-    | :--- | :--- | :--- | :--- |
-    | **Frente** | {c_ciclo_frente:.1f} kWh | {prev_frente:.1f} kWh | R$ {rs_frente:.2f} |
-    | **100** | {c_ciclo_cem:.1f} kWh | {prev_cem:.1f} kWh | R$ {rs_cem:.2f} |
-    | **Fundos** | {c_ciclo_fundos:.1f} kWh | {prev_fundos:.1f} kWh | R$ {rs_fundos:.2f} |
-    | **100 + Fundos** | **{c_ciclo_cem + c_ciclo_fundos:.1f} kWh** | **{prev_cem + prev_fundos:.1f} kWh** | **R$ {rs_cem + rs_fundos:.2f}** |
-    | **Água** | {c_ciclo_agua:.3f} m³ | {prev_agua:.3f} m³ | - |
-    """)
+    # Descobre todos os ciclos disponíveis no Cofre Histórico e nas abas da planilha
+    ciclos_encontrados = set()
+    if mes_ano_luz:
+        ciclos_encontrados.add(mes_ano_luz)
+    if mes_ano_agua:
+        ciclos_encontrados.add(mes_ano_agua)
+    for k in config_dict.keys():
+        if k.startswith("hist_"):
+            partes = k.split("_")
+            if len(partes) >= 3:
+                ciclos_encontrados.add(partes[1])
+    try:
+        sp_atual = get_spreadsheet_por_ano(ano_luz)
+        for ws in sp_atual.worksheets():
+            if ws.title.endswith(" Luz"):
+                ciclos_encontrados.add(ws.title.replace(" Luz", "").strip())
+    except Exception:
+        pass
+
+    def chave_ordenacao_ciclo(c_str):
+        try:
+            return datetime.strptime(c_str, "%m %Y")
+        except Exception:
+            return datetime.min
+
+    lista_ciclos = sorted(list(ciclos_encontrados), key=chave_ordenacao_ciclo, reverse=True)
+    opcoes_seletor = ["Ciclo Atual (Ativo)"] + [f"Histórico: {c}" for c in lista_ciclos]
+    escolha_ciclo = st.selectbox("Consultar Período:", opcoes_seletor, index=0)
+
+    if escolha_ciclo == "Ciclo Atual (Ativo)":
+        st.caption(
+            f"⚡ Luz ({mes_ano_luz}): {luz_ini_cfg} a {luz_fim_cfg} ({dias_decorridos_luz}/{dias_totais_luz} dias) | "
+            f"💧 Água ({mes_ano_agua}): {agua_ini_cfg} a {agua_fim_cfg} ({dias_decorridos_agua}/{dias_totais_agua} dias)"
+        )
+        st.markdown(f"""
+        | Medidor | Consumo Atual | Previsão | Prev. R$ |
+        | :--- | :--- | :--- | :--- |
+        | **Frente** | {c_ciclo_frente:.1f} kWh | {prev_frente:.1f} kWh | R$ {rs_frente:.2f} |
+        | **100** | {c_ciclo_cem:.1f} kWh | {prev_cem:.1f} kWh | R$ {rs_cem:.2f} |
+        | **Fundos** | {c_ciclo_fundos:.1f} kWh | {prev_fundos:.1f} kWh | R$ {rs_fundos:.2f} |
+        | **100 + Fundos** | **{c_ciclo_cem + c_ciclo_fundos:.1f} kWh** | **{prev_cem + prev_fundos:.1f} kWh** | **R$ {rs_cem + rs_fundos:.2f}** |
+        | **Água** | {c_ciclo_agua:.3f} m³ | {prev_agua:.3f} m³ | - |
+        """)
+    else:
+        ciclo_sel = escolha_ciclo.replace("Histórico: ", "").strip()
+        ano_sel = ciclo_sel.split(" ")[-1] if " " in ciclo_sel else datetime.now().strftime("%Y")
+        
+        h_luz_ini = obter_cfg_ciclo(config_dict, ciclo_sel, 'luz_inicio', luz_ini_cfg, usar_ativo=False)
+        h_luz_fim = obter_cfg_ciclo(config_dict, ciclo_sel, 'luz_fim', luz_fim_cfg, usar_ativo=False)
+        h_agua_ini = obter_cfg_ciclo(config_dict, ciclo_sel, 'agua_inicio', agua_ini_cfg, usar_ativo=False)
+        h_agua_fim = obter_cfg_ciclo(config_dict, ciclo_sel, 'agua_fim', agua_fim_cfg, usar_ativo=False)
+
+        h_dias_tot_luz, h_dias_dec_luz = calcular_dias(h_luz_ini, h_luz_fim)
+        h_dias_tot_agua, h_dias_dec_agua = calcular_dias(h_agua_ini, h_agua_fim)
+
+        h_kwh_f = safe_float(obter_cfg_ciclo(config_dict, ciclo_sel, 'luz_kwh_frente', kwh_frente, usar_ativo=False))
+        h_kwh_c = safe_float(obter_cfg_ciclo(config_dict, ciclo_sel, 'luz_kwh_cem', kwh_cem, usar_ativo=False))
+        h_kwh_fu = safe_float(obter_cfg_ciclo(config_dict, ciclo_sel, 'luz_kwh_fundos', kwh_fundos, usar_ativo=False))
+
+        h_taxas = (
+            safe_float(obter_cfg_ciclo(config_dict, ciclo_sel, 'luz_pis', 0.0, usar_ativo=False)) +
+            safe_float(obter_cfg_ciclo(config_dict, ciclo_sel, 'luz_icms', 0.0, usar_ativo=False)) +
+            safe_float(obter_cfg_ciclo(config_dict, ciclo_sel, 'luz_ilum', 0.0, usar_ativo=False)) +
+            safe_float(obter_cfg_ciclo(config_dict, ciclo_sel, 'luz_outros', 0.0, usar_ativo=False))
+        )
+
+        h_ap_f = str(obter_cfg_ciclo(config_dict, ciclo_sel, 'luz_aplica_frente', 'True', usar_ativo=False)).upper() == 'TRUE'
+        h_ap_c = str(obter_cfg_ciclo(config_dict, ciclo_sel, 'luz_aplica_cem', 'True', usar_ativo=False)).upper() == 'TRUE'
+        h_ap_fu = str(obter_cfg_ciclo(config_dict, ciclo_sel, 'luz_aplica_fundos', 'True', usar_ativo=False)).upper() == 'TRUE'
+
+        h_soc_f = str(obter_cfg_ciclo(config_dict, ciclo_sel, 'luz_soc_frente', 'True', usar_ativo=False)).upper() == 'TRUE'
+        h_soc_c = str(obter_cfg_ciclo(config_dict, ciclo_sel, 'luz_soc_cem', 'True', usar_ativo=False)).upper() == 'TRUE'
+        h_soc_fu = str(obter_cfg_ciclo(config_dict, ciclo_sel, 'luz_soc_fundos', 'False', usar_ativo=False)).upper() == 'TRUE'
+
+        # Lê dados históricos de Luz e Água daquele mês
+        hc_f = hc_c = hc_fu = hc_a = 0.0
+        try:
+            aba_h_luz = obter_aba_luz(ciclo_sel, ano_sel)
+            vals_hl = aba_h_luz.get_values()
+            if len(vals_hl) > 1:
+                df_hl = pd.DataFrame(vals_hl[1:], columns=vals_hl[0])
+                hc_f = safe_float(df_hl['Frente'].iloc[-1]) - safe_float(df_hl['Frente'].iloc[0])
+                hc_c = safe_float(df_hl['100'].iloc[-1]) - safe_float(df_hl['100'].iloc[0])
+                hc_fu = safe_float(df_hl['Fundos'].iloc[-1]) - safe_float(df_hl['Fundos'].iloc[0])
+        except Exception:
+            pass
+
+        try:
+            aba_h_agua = obter_aba_agua(ciclo_sel, ano_sel)
+            vals_ha = aba_h_agua.get_values()
+            if len(vals_ha) > 1:
+                df_ha = pd.DataFrame(vals_ha[1:], columns=vals_ha[0])
+                hc_a = safe_float(df_ha['Agua'].iloc[-1]) - safe_float(df_ha['Agua'].iloc[0])
+        except Exception:
+            pass
+
+        hp_f = (hc_f / h_dias_dec_luz) * h_dias_tot_luz if h_dias_dec_luz > 0 else 0.0
+        hp_c = (hc_c / h_dias_dec_luz) * h_dias_tot_luz if h_dias_dec_luz > 0 else 0.0
+        hp_fu = (hc_fu / h_dias_dec_luz) * h_dias_tot_luz if h_dias_dec_luz > 0 else 0.0
+        hp_a = (hc_a / h_dias_dec_agua) * h_dias_tot_agua if h_dias_dec_agua > 0 else 0.0
+
+        hrs_f = calcular_valor_fatura(hp_f, h_kwh_f, h_taxas, h_ap_f, h_soc_f)
+        hrs_c = calcular_valor_fatura(hp_c, h_kwh_c, h_taxas, h_ap_c, h_soc_c)
+        hrs_fu = calcular_valor_fatura(hp_fu, h_kwh_fu, h_taxas, h_ap_fu, h_soc_fu)
+
+        st.caption(
+            f"🏛️ Cofre Histórico ({ciclo_sel}) — ⚡ Luz: {h_luz_ini} a {h_luz_fim} (Taxas: R$ {h_taxas:.2f}) | "
+            f"💧 Água: {h_agua_ini} a {h_agua_fim}"
+        )
+        st.markdown(f"""
+        | Medidor | Consumo Registrado | Fechamento / Prev. | Valor R$ (Tarifa da Época) |
+        | :--- | :--- | :--- | :--- |
+        | **Frente** | {hc_f:.1f} kWh | {hp_f:.1f} kWh | R$ {hrs_f:.2f} |
+        | **100** | {hc_c:.1f} kWh | {hp_c:.1f} kWh | R$ {hrs_c:.2f} |
+        | **Fundos** | {hc_fu:.1f} kWh | {hp_fu:.1f} kWh | R$ {hrs_fu:.2f} |
+        | **100 + Fundos** | **{hc_c + hc_fu:.1f} kWh** | **{hp_c + hp_fu:.1f} kWh** | **R$ {hrs_c + hrs_fu:.2f}** |
+        | **Água** | {hc_a:.3f} m³ | {hp_a:.3f} m³ | - |
+        """)
 
 elif menu == "Configuração de Ciclo":
     st.markdown('<h2 style="margin-bottom: 0px;">⚙️ Configuração do Mês</h2>', unsafe_allow_html=True)
     
+    if "msg_cfg" in st.session_state:
+        st.success(st.session_state.pop("msg_cfg"))
+
     aba_luz, aba_agua = st.tabs(["⚡ Luz", "💧 Água"])
     
     with aba_luz:
         with st.form("form_config_luz"):
-            st.subheader("Período do Ciclo")
+            st.subheader(f"Período do Ciclo (Guia Ativa: {mes_ano_luz} Luz)")
             c1, c2 = st.columns(2)
             with c1:
-                try: val_ini_luz = datetime.strptime(config_dict.get('luz_inicio', ''), "%d/%m/%Y").date()
-                except: val_ini_luz = None
+                try:
+                    val_ini_luz = datetime.strptime(config_dict.get('luz_inicio', ''), "%d/%m/%Y").date()
+                except Exception:
+                    val_ini_luz = None
                 inicio_luz = st.date_input("Início do Ciclo", value=val_ini_luz, format="DD/MM/YYYY")
             with c2:
-                try: val_fim_luz = datetime.strptime(config_dict.get('luz_fim', ''), "%d/%m/%Y").date()
-                except: val_fim_luz = None
+                try:
+                    val_fim_luz = datetime.strptime(config_dict.get('luz_fim', ''), "%d/%m/%Y").date()
+                except Exception:
+                    val_fim_luz = None
                 fim_luz = st.date_input("Fim do Ciclo", value=val_fim_luz, format="DD/MM/YYYY")
                 
             st.subheader("Taxas da Fatura (R$)")
@@ -417,53 +702,117 @@ elif menu == "Configuração de Ciclo":
             
             st.write("Aplicar taxas a quais medidores?")
             col_a, col_b, col_c = st.columns(3)
-            with col_a: t_frente = st.checkbox("Frente", value=aplica_frente)
-            with col_b: t_cem = st.checkbox("100", value=aplica_cem)
-            with col_c: t_fundos = st.checkbox("Fundos", value=aplica_fundos)
+            with col_a:
+                t_frente = st.checkbox("Frente", value=aplica_frente)
+            with col_b:
+                t_cem = st.checkbox("100", value=aplica_cem)
+            with col_c:
+                t_fundos = st.checkbox("Fundos", value=aplica_fundos)
                 
             st.write("Aplicar Tarifa Social (Isenção de 80kWh)?")
             col_sa, col_sb, col_sc = st.columns(3)
-            with col_sa: s_frente = st.checkbox("Frente (Social)", value=soc_frente)
-            with col_sb: s_cem = st.checkbox("100 (Social)", value=soc_cem)
-            with col_sc: s_fundos = st.checkbox("Fundos (Social)", value=soc_fundos)
+            with col_sa:
+                s_frente = st.checkbox("Frente (Social)", value=soc_frente)
+            with col_sb:
+                s_cem = st.checkbox("100 (Social)", value=soc_cem)
+            with col_sc:
+                s_fundos = st.checkbox("Fundos (Social)", value=soc_fundos)
                 
             submit_luz = st.form_submit_button("Salvar Ciclo da Luz", use_container_width=True)
             
             if submit_luz:
                 try:
+                    novo_ini_str = inicio_luz.strftime("%d/%m/%Y") if inicio_luz else ""
+                    novo_fim_str = fim_luz.strftime("%d/%m/%Y") if fim_luz else ""
+                    novo_mes_ano, novo_ano = extrair_mes_ano_ciclo(novo_fim_str)
+                    
+                    # Se mudou para um novo ciclo (ex: 11 2026), cria a guia nova e puxa a Linha 2 automaticamente
+                    nova_aba_luz = obter_aba_luz(novo_mes_ano, novo_ano)
+                    vals_nova_aba = nova_aba_luz.get_values()
+                    if len(vals_nova_aba) <= 1 and not df_luz.empty:
+                        linha_base = df_luz[df_luz['Data'] == novo_ini_str]
+                        if not linha_base.empty:
+                            r_base = linha_base.iloc[-1]
+                        else:
+                            r_base = df_luz.iloc[-1]
+                        data_linha2 = novo_ini_str if novo_ini_str else r_base['Data']
+                        nova_aba_luz.append_row([
+                            data_linha2,
+                            formatar_para_planilha(safe_float(r_base['Frente'])),
+                            formatar_para_planilha(safe_float(r_base['100'])),
+                            formatar_para_planilha(safe_float(r_base['Fundos']))
+                        ], value_input_option="USER_ENTERED")
+
+                    # Salva configurações ativas + fotografia carimbada no Cofre Histórico daquele mês
+                    p_hist = f"hist_{novo_mes_ano}_"
                     update_configs({
-                        "luz_inicio": inicio_luz.strftime("%d/%m/%Y") if inicio_luz else "",
-                        "luz_fim": fim_luz.strftime("%d/%m/%Y") if fim_luz else "",
+                        "luz_inicio": novo_ini_str,
+                        "luz_fim": novo_fim_str,
                         "luz_pis": float(pis_luz), "luz_icms": float(icms_luz),
                         "luz_ilum": float(ilum_luz), "luz_outros": float(outras_luz),
                         "luz_kwh_frente": float(k_frente), "luz_kwh_cem": float(k_cem), "luz_kwh_fundos": float(k_fundos),
                         "luz_aplica_frente": bool(t_frente), "luz_aplica_cem": bool(t_cem), "luz_aplica_fundos": bool(t_fundos),
-                        "luz_soc_frente": bool(s_frente), "luz_soc_cem": bool(s_cem), "luz_soc_fundos": bool(s_fundos)
+                        "luz_soc_frente": bool(s_frente), "luz_soc_cem": bool(s_cem), "luz_soc_fundos": bool(s_fundos),
+                        f"{p_hist}luz_inicio": novo_ini_str,
+                        f"{p_hist}luz_fim": novo_fim_str,
+                        f"{p_hist}luz_pis": float(pis_luz), f"{p_hist}luz_icms": float(icms_luz),
+                        f"{p_hist}luz_ilum": float(ilum_luz), f"{p_hist}luz_outros": float(outras_luz),
+                        f"{p_hist}luz_kwh_frente": float(k_frente), f"{p_hist}luz_kwh_cem": float(k_cem), f"{p_hist}luz_kwh_fundos": float(k_fundos),
+                        f"{p_hist}luz_aplica_frente": bool(t_frente), f"{p_hist}luz_aplica_cem": bool(t_cem), f"{p_hist}luz_aplica_fundos": bool(t_fundos),
+                        f"{p_hist}luz_soc_frente": bool(s_frente), f"{p_hist}luz_soc_cem": bool(s_cem), f"{p_hist}luz_soc_fundos": bool(s_fundos)
                     })
-                    st.success("✅ Configurações da Luz salvas com sucesso!")
+                    st.session_state["msg_cfg"] = f"✅ Ciclo da Luz salvo e arquivado no Cofre Histórico ({novo_mes_ano})!"
+                    st.rerun()
                 except Exception as e:
                     st.error(f"⚠️ Erro ao salvar configs: {e}")
 
     with aba_agua:
         with st.form("form_config_agua"):
-            st.subheader("Período do Ciclo")
+            st.subheader(f"Período do Ciclo (Guia Ativa: {mes_ano_agua} Agua)")
             c1, c2 = st.columns(2)
             with c1:
-                try: val_ini_agua = datetime.strptime(config_dict.get('agua_inicio', ''), "%d/%m/%Y").date()
-                except: val_ini_agua = None
+                try:
+                    val_ini_agua = datetime.strptime(config_dict.get('agua_inicio', ''), "%d/%m/%Y").date()
+                except Exception:
+                    val_ini_agua = None
                 inicio_agua = st.date_input("Início do Ciclo", value=val_ini_agua, format="DD/MM/YYYY", key="inicio_agua")
             with c2:
-                try: val_fim_agua = datetime.strptime(config_dict.get('agua_fim', ''), "%d/%m/%Y").date()
-                except: val_fim_agua = None
+                try:
+                    val_fim_agua = datetime.strptime(config_dict.get('agua_fim', ''), "%d/%m/%Y").date()
+                except Exception:
+                    val_fim_agua = None
                 fim_agua = st.date_input("Fim do Ciclo", value=val_fim_agua, format="DD/MM/YYYY", key="fim_agua")
             
             submit_agua = st.form_submit_button("Salvar Ciclo da Água", use_container_width=True)
             if submit_agua:
                 try:
+                    novo_ini_a_str = inicio_agua.strftime("%d/%m/%Y") if inicio_agua else ""
+                    novo_fim_a_str = fim_agua.strftime("%d/%m/%Y") if fim_agua else ""
+                    novo_mes_ano_a, novo_ano_a = extrair_mes_ano_ciclo(novo_fim_a_str)
+                    
+                    # Se mudou para um novo ciclo, cria a guia nova da Água e puxa a Linha 2 automaticamente
+                    nova_aba_agua = obter_aba_agua(novo_mes_ano_a, novo_ano_a)
+                    vals_nova_agua = nova_aba_agua.get_values()
+                    if len(vals_nova_agua) <= 1 and not df_agua.empty:
+                        linha_base_a = df_agua[df_agua['Data'] == novo_ini_a_str]
+                        if not linha_base_a.empty:
+                            r_base_a = linha_base_a.iloc[-1]
+                        else:
+                            r_base_a = df_agua.iloc[-1]
+                        data_linha2_a = novo_ini_a_str if novo_ini_a_str else r_base_a['Data']
+                        nova_aba_agua.append_row([
+                            data_linha2_a,
+                            formatar_para_planilha(safe_float(r_base_a['Agua']), eh_agua=True)
+                        ], value_input_option="USER_ENTERED")
+
+                    p_hist_a = f"hist_{novo_mes_ano_a}_"
                     update_configs({
-                        "agua_inicio": inicio_agua.strftime("%d/%m/%Y") if inicio_agua else "",
-                        "agua_fim": fim_agua.strftime("%d/%m/%Y") if fim_agua else ""
+                        "agua_inicio": novo_ini_a_str,
+                        "agua_fim": novo_fim_a_str,
+                        f"{p_hist_a}agua_inicio": novo_ini_a_str,
+                        f"{p_hist_a}agua_fim": novo_fim_a_str
                     })
-                    st.success("✅ Configurações da Água salvas com sucesso!")
+                    st.session_state["msg_cfg"] = f"✅ Ciclo da Água salvo e arquivado no Cofre Histórico ({novo_mes_ano_a})!"
+                    st.rerun()
                 except Exception as e:
                     st.error(f"⚠️ Erro ao salvar configs: {e}")
