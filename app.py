@@ -1,3 +1,4 @@
+import math
 import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
@@ -23,7 +24,7 @@ def hoje_br():
 def arredondar_excel(valor, casas=3):
     try:
         d = Decimal(str(valor))
-        formato = "0." + "0" * casas if casas > 0 else "0"
+        formato = "0." + ("0" * casas) if casas > 0 else "0"
         return float(d.quantize(Decimal(formato), rounding=ROUND_HALF_UP))
     except Exception:
         return round(float(valor), casas)
@@ -93,9 +94,17 @@ def obter_aba_luz(mes_ano_str, ano_str):
             vals_antigos = aba_antiga.get_values()
             if len(vals_antigos) > 1:
                 linhas_migrar = []
-                for r in vals_antigos[1:]:
+                for idx_r, r in enumerate(vals_antigos[1:]):
                     if len(r) >= 4:
-                        linhas_migrar.append([r[0], r[1], r[2], r[3]])
+                        if idx_r == 0:
+                            linhas_migrar.append([
+                                r[0],
+                                str(int(math.floor(safe_float(r[1])))),
+                                str(int(math.floor(safe_float(r[2])))),
+                                str(int(math.floor(safe_float(r[3]))))
+                            ])
+                        else:
+                            linhas_migrar.append([r[0], r[1], r[2], r[3]])
                 if linhas_migrar:
                     sheet.append_rows(linhas_migrar, value_input_option="USER_ENTERED")
         except Exception:
@@ -141,6 +150,9 @@ def safe_float(val):
     except Exception:
         return 0.0
 
+def truncar_inteiro(val):
+    return int(math.floor(safe_float(val) + 1e-9))
+
 def calcular_leitura_absoluta(leitura_input, ultima_leitura_absoluta):
     if ultima_leitura_absoluta <= 0.0:
         return round(float(leitura_input), 3)
@@ -156,7 +168,9 @@ def calcular_leitura_absoluta(leitura_input, ultima_leitura_absoluta):
         
     return round(float(base + leitura_input), 3)
 
-def formatar_para_planilha(valor_float, eh_agua=False):
+def formatar_para_planilha(valor_float, eh_agua=False, inteiro=False):
+    if inteiro:
+        return str(truncar_inteiro(valor_float))
     if eh_agua:
         valor_str = f"{arredondar_excel(valor_float, 3):.3f}"
     else:
@@ -215,14 +229,75 @@ def calcular_dias(inicio_str, fim_str, ultima_data_lida_str=None):
     except Exception:
         return 30, 1
 
+def calcular_projecao_luz_inteligente(df_dados, col_nome, dias_totais, dias_decorridos, janela_dias=6):
+    """
+    Calcula a projeção de fechamento da Luz:
+    - Abre e fecha o ciclo em número inteiro (padrão faturamento Light).
+    - Para os dias restantes, pondera 60% o ritmo recente (últimos ~6 dias) + 40% a média geral do ciclo.
+    Retorna: (projecao_hibrida, projecao_media_geral, media_geral_dia, media_recente_dia)
+    """
+    if df_dados.empty or len(df_dados) < 1 or col_nome not in df_dados.columns or dias_decorridos <= 0:
+        return 0.0, 0.0, 0.0, 0.0
+
+    leitura_ini_int = float(truncar_inteiro(df_dados[col_nome].iloc[0]))
+    leitura_ult_real = safe_float(df_dados[col_nome].iloc[-1])
+    leitura_ult_int = float(truncar_inteiro(leitura_ult_real))
+
+    dias_restantes = max(0, dias_totais - dias_decorridos)
+
+    # Se o ciclo já chegou ao fim, o fechamento é o consumo inteiro exato da conta (fração vai para o próximo ciclo)
+    if dias_restantes == 0:
+        fechamento_int = max(0.0, leitura_ult_int - leitura_ini_int)
+        media_g = fechamento_int / dias_totais if dias_totais > 0 else 0.0
+        return fechamento_int, fechamento_int, media_g, media_g
+
+    consumo_acumulado = max(0.0, leitura_ult_real - leitura_ini_int)
+    media_geral = consumo_acumulado / dias_decorridos
+    proj_linear = (consumo_acumulado / dias_decorridos) * dias_totais
+
+    media_recente = media_geral
+    try:
+        df_tmp = df_dados.copy()
+        df_tmp['Dt'] = pd.to_datetime(df_tmp['Data'], format='%d/%m/%Y', errors='coerce')
+        df_tmp['Val'] = df_tmp[col_nome].apply(safe_float)
+        df_tmp = df_tmp.dropna(subset=['Dt']).sort_values('Dt')
+
+        if len(df_tmp) >= 2:
+            dt_ini = df_tmp['Dt'].iloc[0]
+            dt_ult = df_tmp['Dt'].iloc[-1]
+            val_ult = df_tmp['Val'].iloc[-1]
+
+            # Busca uma leitura âncora próxima de 'janela_dias' atrás (mas posterior ao início do ciclo)
+            candidatos = df_tmp[(df_tmp['Dt'] > dt_ini) & (df_tmp['Dt'] < dt_ult)].copy()
+            if not candidatos.empty:
+                dt_alvo = dt_ult - pd.Timedelta(days=janela_dias)
+                candidatos[' dist'] = (candidatos['Dt'] - dt_alvo).abs()
+                ancora = candidatos.sort_values(' dist').iloc[0]
+                dias_jan = (dt_ult - ancora['Dt']).days
+                cons_jan = val_ult - ancora['Val']
+                if dias_jan >= 1 and cons_jan >= 0:
+                    media_recente = cons_jan / dias_jan
+    except Exception:
+        media_recente = media_geral
+
+    ritmo_futuro = (0.60 * media_recente) + (0.40 * media_geral)
+    proj_hibrida_bruta = consumo_acumulado + (dias_restantes * ritmo_futuro)
+    # No fechamento, a Light fatura apenas a parte inteira (a fração fica para o ciclo seguinte)
+    proj_hibrida = float(arredondar_excel(proj_hibrida_bruta, 1))
+    return proj_hibrida, float(arredondar_excel(proj_linear, 1)), media_geral, media_recente
+
 def calcular_valor_fatura(projecao_kwh, valor_kwh, taxas_totais_ciclo, tem_taxas, tem_social):
-    kwh_cobrado = projecao_kwh
+    # A Light fatura sempre o consumo em kWh inteiro na nota fiscal
+    kwh_inteiro_faturado = float(arredondar_excel(projecao_kwh, 0))
+    kwh_cobrado = kwh_inteiro_faturado
     if tem_social:
-        kwh_cobrado = max(0.0, projecao_kwh - 80.0)
+        kwh_cobrado = max(0.0, kwh_inteiro_faturado - 80.0)
     
-    total = kwh_cobrado * valor_kwh
+    # Na fatura Light, o valor da energia é arredondado em 2 casas antes de somar as taxas
+    parcela_energia = arredondar_excel(kwh_cobrado * valor_kwh, 2)
+    total = parcela_energia
     if tem_taxas:
-        total += taxas_totais_ciclo
+        total = arredondar_excel(total + taxas_totais_ciclo, 2)
         
     if total < 50.0:
         return 0.0
@@ -280,16 +355,17 @@ kwh_frente = safe_float(obter_cfg_ciclo(config_dict, mes_ano_luz, 'luz_kwh_frent
 kwh_cem = safe_float(obter_cfg_ciclo(config_dict, mes_ano_luz, 'luz_kwh_cem', 0.0))
 kwh_fundos = safe_float(obter_cfg_ciclo(config_dict, mes_ano_luz, 'luz_kwh_fundos', 0.0))
 
-taxas_totais = (
+taxas_totais = arredondar_excel(
     safe_float(obter_cfg_ciclo(config_dict, mes_ano_luz, 'luz_pis', 0.0)) +
     safe_float(obter_cfg_ciclo(config_dict, mes_ano_luz, 'luz_icms', 0.0)) +
     safe_float(obter_cfg_ciclo(config_dict, mes_ano_luz, 'luz_ilum', 0.0)) +
-    safe_float(obter_cfg_ciclo(config_dict, mes_ano_luz, 'luz_outros', 0.0))
+    safe_float(obter_cfg_ciclo(config_dict, mes_ano_luz, 'luz_outros', 0.0)),
+    2
 )
 
 aplica_frente = str(obter_cfg_ciclo(config_dict, mes_ano_luz, 'luz_aplica_frente', 'True')).upper() == 'TRUE'
 aplica_cem = str(obter_cfg_ciclo(config_dict, mes_ano_luz, 'luz_aplica_cem', 'True')).upper() == 'TRUE'
-aplica_fundos = str(obter_cfg_ciclo(config_dict, mes_ano_luz, 'luz_aplica_fundos', 'True')).upper() == 'TRUE'
+aplica_fundos = str(obter_cfg_ciclo(config_dict, mes_ano_luz, 'luz_aplica_fundos', 'False')).upper() == 'TRUE'
 
 soc_frente = str(obter_cfg_ciclo(config_dict, mes_ano_luz, 'luz_soc_frente', 'True')).upper() == 'TRUE'
 soc_cem = str(obter_cfg_ciclo(config_dict, mes_ano_luz, 'luz_soc_cem', 'True')).upper() == 'TRUE'
@@ -302,6 +378,7 @@ dias_totais_luz, dias_decorridos_luz = calcular_dias(luz_ini_cfg, luz_fim_cfg, u
 dias_totais_agua, dias_decorridos_agua = calcular_dias(agua_ini_cfg, agua_fim_cfg, ult_data_agua)
 
 ultima_frente = ultima_cem = ultima_fundos = ultima_agua = 0.0
+ini_frente_int = ini_cem_int = ini_fundos_int = 0
 c_ciclo_frente = c_ciclo_cem = c_ciclo_fundos = c_ciclo_agua = 0.0
 c_hoje_frente = c_hoje_cem = c_hoje_fundos = c_hoje_agua = 0.0
 
@@ -310,13 +387,24 @@ if not df_luz.empty and len(df_luz) >= 1:
     df_luz['C_num'] = df_luz['100'].apply(safe_float)
     df_luz['Fu_num'] = df_luz['Fundos'].apply(safe_float)
     
+    # A abertura do ciclo (Linha 2) é sempre considerada inteira (padrão fatura Light)
+    ini_frente_int = truncar_inteiro(df_luz['F_num'].iloc[0])
+    ini_cem_int = truncar_inteiro(df_luz['C_num'].iloc[0])
+    ini_fundos_int = truncar_inteiro(df_luz['Fu_num'].iloc[0])
+    
     ultima_frente = df_luz['F_num'].iloc[-1]
     ultima_cem = df_luz['C_num'].iloc[-1]
     ultima_fundos = df_luz['Fu_num'].iloc[-1]
     
-    c_ciclo_frente = round(ultima_frente - df_luz['F_num'].iloc[0], 2)
-    c_ciclo_cem = round(ultima_cem - df_luz['C_num'].iloc[0], 2)
-    c_ciclo_fundos = round(ultima_fundos - df_luz['Fu_num'].iloc[0], 2)
+    # Se o ciclo já fechou (dias_decorridos == dias_totais), exibe o consumo inteiro fechado da conta
+    if dias_decorridos_luz >= dias_totais_luz:
+        c_ciclo_frente = float(truncar_inteiro(ultima_frente) - ini_frente_int)
+        c_ciclo_cem = float(truncar_inteiro(ultima_cem) - ini_cem_int)
+        c_ciclo_fundos = float(truncar_inteiro(ultima_fundos) - ini_fundos_int)
+    else:
+        c_ciclo_frente = round(ultima_frente - ini_frente_int, 2)
+        c_ciclo_cem = round(ultima_cem - ini_cem_int, 2)
+        c_ciclo_fundos = round(ultima_fundos - ini_fundos_int, 2)
     
     if len(df_luz) >= 2:
         c_hoje_frente = round(ultima_frente - df_luz['F_num'].iloc[-2], 2)
@@ -334,9 +422,15 @@ if not df_agua.empty and len(df_agua) >= 1:
     else:
         c_hoje_agua = c_ciclo_agua
 
-prev_frente = (c_ciclo_frente / dias_decorridos_luz) * dias_totais_luz if dias_decorridos_luz > 0 else 0.0
-prev_cem = (c_ciclo_cem / dias_decorridos_luz) * dias_totais_luz if dias_decorridos_luz > 0 else 0.0
-prev_fundos = (c_ciclo_fundos / dias_decorridos_luz) * dias_totais_luz if dias_decorridos_luz > 0 else 0.0
+prev_frente, prev_lin_frente, med_g_frente, med_r_frente = calcular_projecao_luz_inteligente(
+    df_luz, 'Frente', dias_totais_luz, dias_decorridos_luz
+)
+prev_cem, prev_lin_cem, med_g_cem, med_r_cem = calcular_projecao_luz_inteligente(
+    df_luz, '100', dias_totais_luz, dias_decorridos_luz
+)
+prev_fundos, prev_lin_fundos, med_g_fundos, med_r_fundos = calcular_projecao_luz_inteligente(
+    df_luz, 'Fundos', dias_totais_luz, dias_decorridos_luz
+)
 prev_agua = arredondar_excel((c_ciclo_agua / dias_decorridos_agua) * dias_totais_agua, 3) if dias_decorridos_agua > 0 else 0.0
 
 rs_frente = calcular_valor_fatura(prev_frente, kwh_frente, taxas_totais, aplica_frente, soc_frente)
@@ -480,11 +574,13 @@ if menu == "Registro Diário":
                 fu_abs = calcular_leitura_absoluta(fundos_val, fu_ant_base)
                 a_abs = calcular_leitura_absoluta(agua_input, a_ant_base)
                 
+                # Se a data editada for a Linha 2 (abertura do ciclo), salva como inteiro
+                eh_linha_abertura_luz = (not df_luz.empty and df_luz['Data'].iloc[0] == data_str)
                 linha_luz = [
                     data_str, 
-                    formatar_para_planilha(f_abs), 
-                    formatar_para_planilha(c_abs), 
-                    formatar_para_planilha(fu_abs)
+                    formatar_para_planilha(f_abs, inteiro=eh_linha_abertura_luz), 
+                    formatar_para_planilha(c_abs, inteiro=eh_linha_abertura_luz), 
+                    formatar_para_planilha(fu_abs, inteiro=eh_linha_abertura_luz)
                 ]
                 linha_agua = [
                     data_str,
@@ -531,16 +627,19 @@ if menu == "Registro Diário":
 
 elif menu in ["Frente", "100", "Fundos"]:
     st.markdown(f'<h2 style="margin-bottom: 0px;">⚡ {menu}</h2>', unsafe_allow_html=True)
-    st.caption(f"Guia ativa: {mes_ano_luz} Luz")
+    st.caption(f"Guia ativa: {mes_ano_luz} Luz ({dias_decorridos_luz}/{dias_totais_luz} dias)")
     
     meta_ideal_diaria = 150.0 / dias_totais_luz if dias_totais_luz > 0 else 5.0
     
     if menu == "Frente":
-        c_hoje, p_fech = c_hoje_frente, prev_frente
+        c_hoje, p_fech, p_lin, m_ger, m_rec = c_hoje_frente, prev_frente, prev_lin_frente, med_g_frente, med_r_frente
+        l_ini, l_atu, v_rs = ini_frente_int, ultima_frente, rs_frente
     elif menu == "100":
-        c_hoje, p_fech = c_hoje_cem, prev_cem
+        c_hoje, p_fech, p_lin, m_ger, m_rec = c_hoje_cem, prev_cem, prev_lin_cem, med_g_cem, med_r_cem
+        l_ini, l_atu, v_rs = ini_cem_int, ultima_cem, rs_cem
     else:
-        c_hoje, p_fech = c_hoje_fundos, prev_fundos
+        c_hoje, p_fech, p_lin, m_ger, m_rec = c_hoje_fundos, prev_fundos, prev_lin_fundos, med_g_fundos, med_r_fundos
+        l_ini, l_atu, v_rs = ini_fundos_int, ultima_fundos, rs_fundos
         
     variacao_ideal = c_hoje - meta_ideal_diaria
     delta_str = f"{variacao_ideal:+.1f} kWh" if abs(variacao_ideal) > 0.01 else "0.0 kWh"
@@ -548,10 +647,15 @@ elif menu in ["Frente", "100", "Fundos"]:
     col1, col2 = st.columns(2)
     with col1:
         st.metric("Consumo Hoje", f"{c_hoje:.1f} kWh", delta_str, delta_color="inverse")
-        st.metric("Previsão Fechamento", f"{p_fech:.1f} kWh")
+        st.metric("Previsão (Tendência)", f"{p_fech:.0f} kWh (R$ {v_rs:.2f})")
     with col2:
         st.metric("Ideal para o Dia", f"{meta_ideal_diaria:.1f} kWh", " ", delta_color="off") 
-        st.metric("Dias Restantes", f"{dias_totais_luz - dias_decorridos_luz} dias")
+        st.metric("Dias Restantes", f"{max(0, dias_totais_luz - dias_decorridos_luz)} dias")
+
+    st.caption(
+        f"🔢 Leitura: Início **{l_ini}** → Atual **{l_atu:.1f}** (Fechamento Inteiro: **{truncar_inteiro(l_atu)}**) | "
+        f"📈 Média Ciclo: **{m_ger:.2f} kWh/d** | 🔥 Ritmo Recente (6d): **{m_rec:.2f} kWh/d** (Linear: {p_lin:.0f} kWh)"
+    )
 
 elif menu == "Água":
     st.markdown('<h2 style="margin-bottom: 0px;">💧 Água</h2>', unsafe_allow_html=True)
@@ -607,15 +711,22 @@ elif menu == "Resumo dos Ciclos":
             f"⚡ Luz ({mes_ano_luz}): {luz_ini_cfg} a {luz_fim_cfg} ({dias_decorridos_luz}/{dias_totais_luz} dias) | "
             f"💧 Água ({mes_ano_agua}): {agua_ini_cfg} a {agua_fim_cfg} ({dias_decorridos_agua}/{dias_totais_agua} dias)"
         )
+        p_f_int = arredondar_excel(prev_frente, 0)
+        p_c_int = arredondar_excel(prev_cem, 0)
+        p_fu_int = arredondar_excel(prev_fundos, 0)
         st.markdown(f"""
-        | Medidor | Consumo Atual | Previsão | Prev. R$ |
+        | Medidor | Consumo Atual | Previsão (Inteira) | Prev. R$ |
         | :--- | :--- | :--- | :--- |
-        | **Frente** | {c_ciclo_frente:.1f} kWh | {prev_frente:.1f} kWh | R$ {rs_frente:.2f} |
-        | **100** | {c_ciclo_cem:.1f} kWh | {prev_cem:.1f} kWh | R$ {rs_cem:.2f} |
-        | **Fundos** | {c_ciclo_fundos:.1f} kWh | {prev_fundos:.1f} kWh | R$ {rs_fundos:.2f} |
-        | **100 + Fundos** | **{c_ciclo_cem + c_ciclo_fundos:.1f} kWh** | **{prev_cem + prev_fundos:.1f} kWh** | **R$ {rs_cem + rs_fundos:.2f}** |
+        | **Frente** | {c_ciclo_frente:.1f} kWh | {p_f_int:.0f} kWh | R$ {rs_frente:.2f} |
+        | **100** | {c_ciclo_cem:.1f} kWh | {p_c_int:.0f} kWh | R$ {rs_cem:.2f} |
+        | **Fundos** | {c_ciclo_fundos:.1f} kWh | {p_fu_int:.0f} kWh | R$ {rs_fundos:.2f} |
+        | **100 + Fundos** | **{c_ciclo_cem + c_ciclo_fundos:.1f} kWh** | **{p_c_int + p_fu_int:.0f} kWh** | **R$ {rs_cem + rs_fundos:.2f}** |
         | **Água** | {c_ciclo_agua:.3f} m³ | {prev_agua:.3f} m³ | - |
         """)
+        st.caption(
+            f"💡 *Previsão por Tendência (60% últimos 6 dias + 40% média do ciclo). "
+            f"Média simples linear: Frente {prev_lin_frente:.0f} kWh | 100 {prev_lin_cem:.0f} kWh | Fundos {prev_lin_fundos:.0f} kWh.*"
+        )
     else:
         ciclo_sel = escolha_ciclo.replace("Histórico: ", "").strip()
         ano_sel = ciclo_sel.split(" ")[-1] if " " in ciclo_sel else agora_br().strftime("%Y")
@@ -628,14 +739,15 @@ elif menu == "Resumo dos Ciclos":
         hc_f = hc_c = hc_fu = hc_a = 0.0
         h_ult_luz = None
         h_ult_agua = None
+        df_hl = pd.DataFrame()
         try:
             aba_h_luz = obter_aba_luz(ciclo_sel, ano_sel)
             vals_hl = aba_h_luz.get_values()
             if len(vals_hl) > 1:
                 df_hl = pd.DataFrame(vals_hl[1:], columns=vals_hl[0])
-                hc_f = round(safe_float(df_hl['Frente'].iloc[-1]) - safe_float(df_hl['Frente'].iloc[0]), 2)
-                hc_c = round(safe_float(df_hl['100'].iloc[-1]) - safe_float(df_hl['100'].iloc[0]), 2)
-                hc_fu = round(safe_float(df_hl['Fundos'].iloc[-1]) - safe_float(df_hl['Fundos'].iloc[0]), 2)
+                hc_f = float(truncar_inteiro(df_hl['Frente'].iloc[-1]) - truncar_inteiro(df_hl['Frente'].iloc[0]))
+                hc_c = float(truncar_inteiro(df_hl['100'].iloc[-1]) - truncar_inteiro(df_hl['100'].iloc[0]))
+                hc_fu = float(truncar_inteiro(df_hl['Fundos'].iloc[-1]) - truncar_inteiro(df_hl['Fundos'].iloc[0]))
                 if len(df_hl) >= 2 and 'Data' in df_hl.columns:
                     h_ult_luz = df_hl['Data'].iloc[-1]
         except Exception:
@@ -659,24 +771,25 @@ elif menu == "Resumo dos Ciclos":
         h_kwh_c = safe_float(obter_cfg_ciclo(config_dict, ciclo_sel, 'luz_kwh_cem', kwh_cem, usar_ativo=False))
         h_kwh_fu = safe_float(obter_cfg_ciclo(config_dict, ciclo_sel, 'luz_kwh_fundos', kwh_fundos, usar_ativo=False))
 
-        h_taxas = (
+        h_taxas = arredondar_excel(
             safe_float(obter_cfg_ciclo(config_dict, ciclo_sel, 'luz_pis', 0.0, usar_ativo=False)) +
             safe_float(obter_cfg_ciclo(config_dict, ciclo_sel, 'luz_icms', 0.0, usar_ativo=False)) +
             safe_float(obter_cfg_ciclo(config_dict, ciclo_sel, 'luz_ilum', 0.0, usar_ativo=False)) +
-            safe_float(obter_cfg_ciclo(config_dict, ciclo_sel, 'luz_outros', 0.0, usar_ativo=False))
+            safe_float(obter_cfg_ciclo(config_dict, ciclo_sel, 'luz_outros', 0.0, usar_ativo=False)),
+            2
         )
 
         h_ap_f = str(obter_cfg_ciclo(config_dict, ciclo_sel, 'luz_aplica_frente', 'True', usar_ativo=False)).upper() == 'TRUE'
         h_ap_c = str(obter_cfg_ciclo(config_dict, ciclo_sel, 'luz_aplica_cem', 'True', usar_ativo=False)).upper() == 'TRUE'
-        h_ap_fu = str(obter_cfg_ciclo(config_dict, ciclo_sel, 'luz_aplica_fundos', 'True', usar_ativo=False)).upper() == 'TRUE'
+        h_ap_fu = str(obter_cfg_ciclo(config_dict, ciclo_sel, 'luz_aplica_fundos', 'False', usar_ativo=False)).upper() == 'TRUE'
 
         h_soc_f = str(obter_cfg_ciclo(config_dict, ciclo_sel, 'luz_soc_frente', 'True', usar_ativo=False)).upper() == 'TRUE'
         h_soc_c = str(obter_cfg_ciclo(config_dict, ciclo_sel, 'luz_soc_cem', 'True', usar_ativo=False)).upper() == 'TRUE'
         h_soc_fu = str(obter_cfg_ciclo(config_dict, ciclo_sel, 'luz_soc_fundos', 'False', usar_ativo=False)).upper() == 'TRUE'
 
-        hp_f = (hc_f / h_dias_dec_luz) * h_dias_tot_luz if h_dias_dec_luz > 0 else 0.0
-        hp_c = (hc_c / h_dias_dec_luz) * h_dias_tot_luz if h_dias_dec_luz > 0 else 0.0
-        hp_fu = (hc_fu / h_dias_dec_luz) * h_dias_tot_luz if h_dias_dec_luz > 0 else 0.0
+        hp_f, _, _, _ = calcular_projecao_luz_inteligente(df_hl, 'Frente', h_dias_tot_luz, h_dias_dec_luz)
+        hp_c, _, _, _ = calcular_projecao_luz_inteligente(df_hl, '100', h_dias_tot_luz, h_dias_dec_luz)
+        hp_fu, _, _, _ = calcular_projecao_luz_inteligente(df_hl, 'Fundos', h_dias_tot_luz, h_dias_dec_luz)
         hp_a = arredondar_excel((hc_a / h_dias_dec_agua) * h_dias_tot_agua, 3) if h_dias_dec_agua > 0 else 0.0
 
         hrs_f = calcular_valor_fatura(hp_f, h_kwh_f, h_taxas, h_ap_f, h_soc_f)
@@ -684,16 +797,16 @@ elif menu == "Resumo dos Ciclos":
         hrs_fu = calcular_valor_fatura(hp_fu, h_kwh_fu, h_taxas, h_ap_fu, h_soc_fu)
 
         st.caption(
-            f"🏛️ Cofre Histórico ({ciclo_sel}) — ⚡ Luz: {h_luz_ini} a {h_luz_fim} (Taxas: R$ {h_taxas:.2f}) | "
+            f"🏛️ Cofre Histórico ({ciclo_sel}) — ⚡ Luz: {h_luz_ini} a {h_luz_fim} (Taxas Subvenção+Ilum: R$ {h_taxas:.2f}) | "
             f"💧 Água: {h_agua_ini} a {h_agua_fim}"
         )
         st.markdown(f"""
-        | Medidor | Consumo Registrado | Fechamento / Prev. | Valor R$ (Tarifa da Época) |
+        | Medidor | Consumo Inteiro | Fechamento / Prev. | Valor R$ (Tarifa da Época) |
         | :--- | :--- | :--- | :--- |
-        | **Frente** | {hc_f:.1f} kWh | {hp_f:.1f} kWh | R$ {hrs_f:.2f} |
-        | **100** | {hc_c:.1f} kWh | {hp_c:.1f} kWh | R$ {hrs_c:.2f} |
-        | **Fundos** | {hc_fu:.1f} kWh | {hp_fu:.1f} kWh | R$ {hrs_fu:.2f} |
-        | **100 + Fundos** | **{hc_c + hc_fu:.1f} kWh** | **{hp_c + hp_fu:.1f} kWh** | **R$ {hrs_c + hrs_fu:.2f}** |
+        | **Frente** | {hc_f:.0f} kWh | {hp_f:.0f} kWh | R$ {hrs_f:.2f} |
+        | **100** | {hc_c:.0f} kWh | {hp_c:.0f} kWh | R$ {hrs_c:.2f} |
+        | **Fundos** | {hc_fu:.0f} kWh | {hp_fu:.0f} kWh | R$ {hrs_fu:.2f} |
+        | **100 + Fundos** | **{hc_c + hc_fu:.0f} kWh** | **{hp_c + hp_fu:.0f} kWh** | **R$ {hrs_c + hrs_fu:.2f}** |
         | **Água** | {hc_a:.3f} m³ | {hp_a:.3f} m³ | - |
         """)
 
@@ -714,24 +827,25 @@ elif menu == "Configuração de Ciclo":
                     val_ini_luz = datetime.strptime(config_dict.get('luz_inicio', ''), "%d/%m/%Y").date()
                 except Exception:
                     val_ini_luz = None
-                inicio_luz = st.date_input("Início do Ciclo", value=val_ini_luz, format="DD/MM/YYYY")
+                inicio_luz = st.date_input("Leitura Anterior (Início)", value=val_ini_luz, format="DD/MM/YYYY")
             with c2:
                 try:
                     val_fim_luz = datetime.strptime(config_dict.get('luz_fim', ''), "%d/%m/%Y").date()
                 except Exception:
                     val_fim_luz = None
-                fim_luz = st.date_input("Fim do Ciclo", value=val_fim_luz, format="DD/MM/YYYY")
+                fim_luz = st.date_input("Próxima Leitura (Fim)", value=val_fim_luz, format="DD/MM/YYYY")
                 
-            st.subheader("Taxas da Fatura (R$)")
+            st.subheader("Taxas Fixas da Fatura (R$)")
+            st.caption("Valores da coluna 'Valor (R$)' da conta (Subvenção Baixa Renda + Ilum. Pública):")
             t1, t2 = st.columns(2)
             with t1:
-                pis_luz = st.number_input("PIS/COFINS", value=safe_float(config_dict.get('luz_pis', 0.0)), format="%.2f", step=0.10)
-                icms_luz = st.number_input("ICMS", value=safe_float(config_dict.get('luz_icms', 0.0)), format="%.2f", step=0.10)
+                pis_luz = st.number_input("PIS/COFINS da Subvenção", value=safe_float(config_dict.get('luz_pis', 0.0)), format="%.2f", step=0.10)
+                icms_luz = st.number_input("ICMS da Subvenção", value=safe_float(config_dict.get('luz_icms', 0.0)), format="%.2f", step=0.10)
             with t2:
-                ilum_luz = st.number_input("Ilum. Pública", value=safe_float(config_dict.get('luz_ilum', 0.0)), format="%.2f", step=0.10)
-                outras_luz = st.number_input("Outros", value=safe_float(config_dict.get('luz_outros', 0.0)), format="%.2f", step=0.10)
+                ilum_luz = st.number_input("Contrib. Ilum. Pública", value=safe_float(config_dict.get('luz_ilum', 0.0)), format="%.2f", step=0.10)
+                outras_luz = st.number_input("Outros / Bandeira Extra", value=safe_float(config_dict.get('luz_outros', 0.0)), format="%.2f", step=0.10)
                 
-            st.subheader("Valor do kWh (R$)")
+            st.subheader("Preço Unit. (R$) com Tributos (kWh)")
             k1, k2, k3 = st.columns(3)
             with k1:
                 k_frente = st.number_input("Frente (R$)", value=safe_float(config_dict.get('luz_kwh_frente', 0.0)), format="%.5f", step=0.01)
@@ -740,7 +854,7 @@ elif menu == "Configuração de Ciclo":
             with k3:
                 k_fundos = st.number_input("Fundos (R$)", value=safe_float(config_dict.get('luz_kwh_fundos', 0.0)), format="%.5f", step=0.01)
             
-            st.write("Aplicar taxas a quais medidores?")
+            st.write("Aplicar taxas fixas (Subvenção + Ilum.) a quais medidores?")
             col_a, col_b, col_c = st.columns(3)
             with col_a:
                 t_frente = st.checkbox("Frente", value=aplica_frente)
@@ -775,11 +889,12 @@ elif menu == "Configuração de Ciclo":
                         else:
                             r_base = df_luz.iloc[-1]
                         data_linha2 = novo_ini_str if novo_ini_str else r_base['Data']
+                        # Abre o novo ciclo sempre com leitura INTEIRA (a fração vai para o próximo ciclo)
                         nova_aba_luz.append_row([
                             data_linha2,
-                            formatar_para_planilha(safe_float(r_base['Frente'])),
-                            formatar_para_planilha(safe_float(r_base['100'])),
-                            formatar_para_planilha(safe_float(r_base['Fundos']))
+                            formatar_para_planilha(safe_float(r_base['Frente']), inteiro=True),
+                            formatar_para_planilha(safe_float(r_base['100']), inteiro=True),
+                            formatar_para_planilha(safe_float(r_base['Fundos']), inteiro=True)
                         ], value_input_option="USER_ENTERED")
 
                     p_hist = f"hist_{novo_mes_ano}_"
@@ -803,6 +918,30 @@ elif menu == "Configuração de Ciclo":
                     st.rerun()
                 except Exception as e:
                     st.error(f"⚠️ Erro ao salvar configs: {e}")
+
+        if not df_luz.empty:
+            with st.expander("🔢 Conferir / Ajustar Leituras Iniciais Inteiras da Conta (Linha 2)"):
+                st.caption(f"Leitura inicial inteira gravada na Linha 2 da guia **{mes_ano_luz} Luz** (Data: {df_luz['Data'].iloc[0]}):")
+                with st.form("form_ajuste_linha2_luz"):
+                    ca1, ca2, ca3 = st.columns(3)
+                    with ca1:
+                        l2_f = st.number_input("Frente Inicial", value=int(ini_frente_int), step=1)
+                    with ca2:
+                        l2_c = st.number_input("100 Inicial", value=int(ini_cem_int), step=1)
+                    with ca3:
+                        l2_fu = st.number_input("Fundos Inicial", value=int(ini_fundos_int), step=1)
+                    if st.form_submit_button("Atualizar Linha 2 (Inteira)", use_container_width=True):
+                        try:
+                            dt_l2 = df_luz['Data'].iloc[0]
+                            planilha_luz.update(
+                                values=[[dt_l2, str(int(l2_f)), str(int(l2_c)), str(int(l2_fu))]],
+                                range_name="A2:D2",
+                                value_input_option="USER_ENTERED"
+                            )
+                            st.session_state["msg_cfg"] = f"✅ Leituras iniciais inteiras atualizadas na guia {mes_ano_luz} Luz!"
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"⚠️ Erro ao atualizar Linha 2: {e}")
 
     with aba_agua:
         with st.form("form_config_agua"):
