@@ -1,3 +1,4 @@
+# === APLICATIVO CONTROLE LUZ & ÁGUA - VERSÃO 1.16 ===
 import math
 import streamlit as st
 import streamlit.components.v1 as components
@@ -6,6 +7,8 @@ from datetime import datetime, date, timezone, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 import gspread
 from google.oauth2.service_account import Credentials
+
+VERSAO_APP = "1.16"
 
 st.set_page_config(
     page_title="Controle Luz & Água",
@@ -271,8 +274,8 @@ def calcular_projecao_luz_inteligente(df_dados, col_nome, dias_totais, dias_deco
             candidatos = df_tmp[(df_tmp['Dt'] > dt_ini) & (df_tmp['Dt'] < dt_ult)].copy()
             if not candidatos.empty:
                 dt_alvo = dt_ult - pd.Timedelta(days=janela_dias)
-                candidatos[' dist'] = (candidatos['Dt'] - dt_alvo).abs()
-                ancora = candidatos.sort_values(' dist').iloc[0]
+                candidatos['dist'] = (candidatos['Dt'] - dt_alvo).abs()
+                ancora = candidatos.sort_values('dist').iloc[0]
                 dias_jan = (dt_ult - ancora['Dt']).days
                 cons_jan = val_ult - ancora['Val']
                 if dias_jan >= 1 and cons_jan >= 0:
@@ -282,25 +285,25 @@ def calcular_projecao_luz_inteligente(df_dados, col_nome, dias_totais, dias_deco
 
     ritmo_futuro = (0.60 * media_recente) + (0.40 * media_geral)
     proj_hibrida_bruta = consumo_acumulado + (dias_restantes * ritmo_futuro)
-    # No fechamento, a Light fatura apenas a parte inteira (a fração fica para o ciclo seguinte)
-    proj_hibrida = float(arredondar_excel(proj_hibrida_bruta, 1))
-    return proj_hibrida, float(arredondar_excel(proj_linear, 1)), media_geral, media_recente
+    proj_hibrida = float(arredondar_excel(proj_hibrida_bruta, 2))
+    return proj_hibrida, float(arredondar_excel(proj_linear, 2)), media_geral, media_recente
 
-def calcular_valor_fatura(projecao_kwh, valor_kwh, taxas_totais_ciclo, tem_taxas, tem_social):
-    # A Light fatura sempre o consumo em kWh inteiro na nota fiscal
-    kwh_inteiro_faturado = float(arredondar_excel(projecao_kwh, 0))
-    kwh_cobrado = kwh_inteiro_faturado
+def calcular_valor_fatura(projecao_kwh, valor_kwh, taxas_totais_ciclo, tem_taxas, tem_social, residuo_anterior=0.0):
+    if projecao_kwh <= 0.0 and valor_kwh <= 0.0:
+        return arredondar_excel(residuo_anterior, 2)
+
+    kwh_cobrado = float(projecao_kwh)
     if tem_social:
-        kwh_cobrado = max(0.0, kwh_inteiro_faturado - 80.0)
+        kwh_cobrado = max(0.0, kwh_cobrado - 80.0)
     
-    # Na fatura Light, o valor da energia é arredondado em 2 casas antes de somar as taxas
+    # Na fatura Light, o valor da energia é arredondado em 2 casas antes de somar as taxas e eventuais resíduos (< R$ 50)
     parcela_energia = arredondar_excel(kwh_cobrado * valor_kwh, 2)
     total = parcela_energia
     if tem_taxas:
         total = arredondar_excel(total + taxas_totais_ciclo, 2)
+    if residuo_anterior > 0.0:
+        total = arredondar_excel(total + residuo_anterior, 2)
         
-    if total < 50.0:
-        return 0.0
     return total
 
 def obter_cfg_ciclo(cfg_dict, mes_ano, chave_base, padrao="", usar_ativo=True):
@@ -362,6 +365,10 @@ taxas_totais = arredondar_excel(
     safe_float(obter_cfg_ciclo(config_dict, mes_ano_luz, 'luz_outros', 0.0)),
     2
 )
+
+res_frente = safe_float(obter_cfg_ciclo(config_dict, mes_ano_luz, 'luz_res_frente', 0.0))
+res_cem = safe_float(obter_cfg_ciclo(config_dict, mes_ano_luz, 'luz_res_cem', 0.0))
+res_fundos = safe_float(obter_cfg_ciclo(config_dict, mes_ano_luz, 'luz_res_fundos', 0.0))
 
 aplica_frente = str(obter_cfg_ciclo(config_dict, mes_ano_luz, 'luz_aplica_frente', 'True')).upper() == 'TRUE'
 aplica_cem = str(obter_cfg_ciclo(config_dict, mes_ano_luz, 'luz_aplica_cem', 'True')).upper() == 'TRUE'
@@ -433,9 +440,9 @@ prev_fundos, prev_lin_fundos, med_g_fundos, med_r_fundos = calcular_projecao_luz
 )
 prev_agua = arredondar_excel((c_ciclo_agua / dias_decorridos_agua) * dias_totais_agua, 3) if dias_decorridos_agua > 0 else 0.0
 
-rs_frente = calcular_valor_fatura(prev_frente, kwh_frente, taxas_totais, aplica_frente, soc_frente)
-rs_cem = calcular_valor_fatura(prev_cem, kwh_cem, taxas_totais, aplica_cem, soc_cem)
-rs_fundos = calcular_valor_fatura(prev_fundos, kwh_fundos, taxas_totais, aplica_fundos, soc_fundos)
+rs_frente = calcular_valor_fatura(prev_frente, kwh_frente, taxas_totais, aplica_frente, soc_frente, res_frente)
+rs_cem = calcular_valor_fatura(prev_cem, kwh_cem, taxas_totais, aplica_cem, soc_cem, res_cem)
+rs_fundos = calcular_valor_fatura(prev_fundos, kwh_fundos, taxas_totais, aplica_fundos, soc_fundos, res_fundos)
 
 if "recolher_menu" not in st.session_state:
     st.session_state["recolher_menu"] = 0
@@ -451,6 +458,7 @@ menu = st.sidebar.radio(
     ["Registro Diário", "Resumo dos Ciclos", "Frente", "100", "Fundos", "Água", "Configuração de Ciclo"],
     on_change=acionar_fechamento_menu
 )
+st.sidebar.caption(f"📌 Versão {VERSAO_APP}")
 
 if st.session_state.get("fechar_menu_agora", False):
     st.session_state["fechar_menu_agora"] = False
@@ -490,7 +498,7 @@ if st.session_state.get("fechar_menu_agora", False):
 
 if menu == "Registro Diário":
     st.markdown('<h2 style="margin-bottom: 0px;">Registro Diário</h2>', unsafe_allow_html=True)
-    st.caption(f"⚡ Guia Luz: **{mes_ano_luz} Luz** | 💧 Guia Água: **{mes_ano_agua} Agua**")
+    st.caption(f"⚡ Guia Luz: **{mes_ano_luz} Luz** | 💧 Guia Água: **{mes_ano_agua} Agua** | v{VERSAO_APP}")
     
     if "msg_sucesso" in st.session_state:
         st.success(st.session_state.pop("msg_sucesso"))
@@ -633,13 +641,13 @@ elif menu in ["Frente", "100", "Fundos"]:
     
     if menu == "Frente":
         c_hoje, p_fech, p_lin, m_ger, m_rec = c_hoje_frente, prev_frente, prev_lin_frente, med_g_frente, med_r_frente
-        l_ini, l_atu, v_rs = ini_frente_int, ultima_frente, rs_frente
+        l_ini, l_atu, v_rs, v_res = ini_frente_int, ultima_frente, rs_frente, res_frente
     elif menu == "100":
         c_hoje, p_fech, p_lin, m_ger, m_rec = c_hoje_cem, prev_cem, prev_lin_cem, med_g_cem, med_r_cem
-        l_ini, l_atu, v_rs = ini_cem_int, ultima_cem, rs_cem
+        l_ini, l_atu, v_rs, v_res = ini_cem_int, ultima_cem, rs_cem, res_cem
     else:
         c_hoje, p_fech, p_lin, m_ger, m_rec = c_hoje_fundos, prev_fundos, prev_lin_fundos, med_g_fundos, med_r_fundos
-        l_ini, l_atu, v_rs = ini_fundos_int, ultima_fundos, rs_fundos
+        l_ini, l_atu, v_rs, v_res = ini_fundos_int, ultima_fundos, rs_fundos, res_fundos
         
     variacao_ideal = c_hoje - meta_ideal_diaria
     delta_str = f"{variacao_ideal:+.1f} kWh" if abs(variacao_ideal) > 0.01 else "0.0 kWh"
@@ -647,14 +655,16 @@ elif menu in ["Frente", "100", "Fundos"]:
     col1, col2 = st.columns(2)
     with col1:
         st.metric("Consumo Hoje", f"{c_hoje:.1f} kWh", delta_str, delta_color="inverse")
-        st.metric("Previsão (Tendência)", f"{p_fech:.0f} kWh (R$ {v_rs:.2f})")
+        st.metric("Previsão (Tendência)", f"{p_fech:.1f} kWh (R$ {v_rs:.2f})")
     with col2:
         st.metric("Ideal para o Dia", f"{meta_ideal_diaria:.1f} kWh", " ", delta_color="off") 
         st.metric("Dias Restantes", f"{max(0, dias_totais_luz - dias_decorridos_luz)} dias")
 
+    info_res = f" | 💰 Acúmulo Ant.: **R$ {v_res:.2f}**" if v_res > 0 else ""
+    info_abaixo50 = " *(Abaixo de R$ 50,00: se fechar assim, acumula p/ próx. ciclo)*" if 0 < v_rs < 50.0 else ""
     st.caption(
         f"🔢 Leitura: Início **{l_ini}** → Atual **{l_atu:.1f}** (Fechamento Inteiro: **{truncar_inteiro(l_atu)}**) | "
-        f"📈 Média Ciclo: **{m_ger:.2f} kWh/d** | 🔥 Ritmo Recente (6d): **{m_rec:.2f} kWh/d** (Linear: {p_lin:.0f} kWh)"
+        f"📈 Média Ciclo: **{m_ger:.2f} kWh/d** | 🔥 Ritmo Recente (6d): **{m_rec:.2f} kWh/d** (Linear: {p_lin:.1f} kWh){info_res}{info_abaixo50}"
     )
 
 elif menu == "Água":
@@ -711,21 +721,25 @@ elif menu == "Resumo dos Ciclos":
             f"⚡ Luz ({mes_ano_luz}): {luz_ini_cfg} a {luz_fim_cfg} ({dias_decorridos_luz}/{dias_totais_luz} dias) | "
             f"💧 Água ({mes_ano_agua}): {agua_ini_cfg} a {agua_fim_cfg} ({dias_decorridos_agua}/{dias_totais_agua} dias)"
         )
-        p_f_int = arredondar_excel(prev_frente, 0)
-        p_c_int = arredondar_excel(prev_cem, 0)
-        p_fu_int = arredondar_excel(prev_fundos, 0)
+        tag_f = " *" if 0 < rs_frente < 50.0 else ""
+        tag_c = " *" if 0 < rs_cem < 50.0 else ""
+        tag_fu = " *" if 0 < rs_fundos < 50.0 else ""
         st.markdown(f"""
-        | Medidor | Consumo Atual | Previsão (Inteira) | Prev. R$ |
+        | Medidor | Consumo Atual | Previsão | Prev. R$ |
         | :--- | :--- | :--- | :--- |
-        | **Frente** | {c_ciclo_frente:.1f} kWh | {p_f_int:.0f} kWh | R$ {rs_frente:.2f} |
-        | **100** | {c_ciclo_cem:.1f} kWh | {p_c_int:.0f} kWh | R$ {rs_cem:.2f} |
-        | **Fundos** | {c_ciclo_fundos:.1f} kWh | {p_fu_int:.0f} kWh | R$ {rs_fundos:.2f} |
-        | **100 + Fundos** | **{c_ciclo_cem + c_ciclo_fundos:.1f} kWh** | **{p_c_int + p_fu_int:.0f} kWh** | **R$ {rs_cem + rs_fundos:.2f}** |
+        | **Frente** | {c_ciclo_frente:.1f} kWh | {prev_frente:.1f} kWh | R$ {rs_frente:.2f}{tag_f} |
+        | **100** | {c_ciclo_cem:.1f} kWh | {prev_cem:.1f} kWh | R$ {rs_cem:.2f}{tag_c} |
+        | **Fundos** | {c_ciclo_fundos:.1f} kWh | {prev_fundos:.1f} kWh | R$ {rs_fundos:.2f}{tag_fu} |
+        | **100 + Fundos** | **{c_ciclo_cem + c_ciclo_fundos:.1f} kWh** | **{prev_cem + prev_fundos:.1f} kWh** | **R$ {rs_cem + rs_fundos:.2f}** |
         | **Água** | {c_ciclo_agua:.3f} m³ | {prev_agua:.3f} m³ | - |
         """)
+        nota_acumulo = ""
+        if (res_frente + res_cem + res_fundos) > 0:
+            nota_acumulo = f" | 💰 *Inclui resíduo acumulado do ciclo anterior (Frente: R$ {res_frente:.2f}, 100: R$ {res_cem:.2f}, Fundos: R$ {res_fundos:.2f}).*"
         st.caption(
             f"💡 *Previsão por Tendência (60% últimos 6 dias + 40% média do ciclo). "
-            f"Média simples linear: Frente {prev_lin_frente:.0f} kWh | 100 {prev_lin_cem:.0f} kWh | Fundos {prev_lin_fundos:.0f} kWh.*"
+            f"Média simples linear: Frente {prev_lin_frente:.1f} kWh | 100 {prev_lin_cem:.1f} kWh | Fundos {prev_lin_fundos:.1f} kWh. "
+            f"Valores individuais marcados com (*) estão abaixo de R$ 50,00 (se fecharem assim, acumulam para o próximo ciclo).* {nota_acumulo}"
         )
     else:
         ciclo_sel = escolha_ciclo.replace("Histórico: ", "").strip()
@@ -779,6 +793,10 @@ elif menu == "Resumo dos Ciclos":
             2
         )
 
+        h_res_f = safe_float(obter_cfg_ciclo(config_dict, ciclo_sel, 'luz_res_frente', 0.0, usar_ativo=False))
+        h_res_c = safe_float(obter_cfg_ciclo(config_dict, ciclo_sel, 'luz_res_cem', 0.0, usar_ativo=False))
+        h_res_fu = safe_float(obter_cfg_ciclo(config_dict, ciclo_sel, 'luz_res_fundos', 0.0, usar_ativo=False))
+
         h_ap_f = str(obter_cfg_ciclo(config_dict, ciclo_sel, 'luz_aplica_frente', 'True', usar_ativo=False)).upper() == 'TRUE'
         h_ap_c = str(obter_cfg_ciclo(config_dict, ciclo_sel, 'luz_aplica_cem', 'True', usar_ativo=False)).upper() == 'TRUE'
         h_ap_fu = str(obter_cfg_ciclo(config_dict, ciclo_sel, 'luz_aplica_fundos', 'False', usar_ativo=False)).upper() == 'TRUE'
@@ -792,20 +810,23 @@ elif menu == "Resumo dos Ciclos":
         hp_fu, _, _, _ = calcular_projecao_luz_inteligente(df_hl, 'Fundos', h_dias_tot_luz, h_dias_dec_luz)
         hp_a = arredondar_excel((hc_a / h_dias_dec_agua) * h_dias_tot_agua, 3) if h_dias_dec_agua > 0 else 0.0
 
-        hrs_f = calcular_valor_fatura(hp_f, h_kwh_f, h_taxas, h_ap_f, h_soc_f)
-        hrs_c = calcular_valor_fatura(hp_c, h_kwh_c, h_taxas, h_ap_c, h_soc_c)
-        hrs_fu = calcular_valor_fatura(hp_fu, h_kwh_fu, h_taxas, h_ap_fu, h_soc_fu)
+        hrs_f = calcular_valor_fatura(hp_f, h_kwh_f, h_taxas, h_ap_f, h_soc_f, h_res_f)
+        hrs_c = calcular_valor_fatura(hp_c, h_kwh_c, h_taxas, h_ap_c, h_soc_c, h_res_c)
+        hrs_fu = calcular_valor_fatura(hp_fu, h_kwh_fu, h_taxas, h_ap_fu, h_soc_fu, h_res_fu)
 
         st.caption(
             f"🏛️ Cofre Histórico ({ciclo_sel}) — ⚡ Luz: {h_luz_ini} a {h_luz_fim} (Taxas Subvenção+Ilum: R$ {h_taxas:.2f}) | "
             f"💧 Água: {h_agua_ini} a {h_agua_fim}"
         )
+        htag_f = " (Acumulou p/ próx.)" if 0 < hrs_f < 50.0 else ""
+        htag_c = " (Acumulou p/ próx.)" if 0 < hrs_c < 50.0 else ""
+        htag_fu = " (Acumulou p/ próx.)" if 0 < hrs_fu < 50.0 else ""
         st.markdown(f"""
         | Medidor | Consumo Inteiro | Fechamento / Prev. | Valor R$ (Tarifa da Época) |
         | :--- | :--- | :--- | :--- |
-        | **Frente** | {hc_f:.0f} kWh | {hp_f:.0f} kWh | R$ {hrs_f:.2f} |
-        | **100** | {hc_c:.0f} kWh | {hp_c:.0f} kWh | R$ {hrs_c:.2f} |
-        | **Fundos** | {hc_fu:.0f} kWh | {hp_fu:.0f} kWh | R$ {hrs_fu:.2f} |
+        | **Frente** | {hc_f:.0f} kWh | {hp_f:.0f} kWh | R$ {hrs_f:.2f}{htag_f} |
+        | **100** | {hc_c:.0f} kWh | {hp_c:.0f} kWh | R$ {hrs_c:.2f}{htag_c} |
+        | **Fundos** | {hc_fu:.0f} kWh | {hp_fu:.0f} kWh | R$ {hrs_fu:.2f}{htag_fu} |
         | **100 + Fundos** | **{hc_c + hc_fu:.0f} kWh** | **{hp_c + hp_fu:.0f} kWh** | **R$ {hrs_c + hrs_fu:.2f}** |
         | **Água** | {hc_a:.3f} m³ | {hp_a:.3f} m³ | - |
         """)
@@ -871,6 +892,16 @@ elif menu == "Configuração de Ciclo":
                 s_cem = st.checkbox("100 (Social)", value=soc_cem)
             with col_sc:
                 s_fundos = st.checkbox("Fundos (Social)", value=soc_fundos)
+
+            with st.expander("💰 Resíduo Acumulado (< R$ 50,00 vindo do ciclo anterior)"):
+                st.caption("Se uma conta fechou abaixo de R$ 50,00 no ciclo passado, o valor é repassado automaticamente para cá ao abrir o novo ciclo:")
+                cr1, cr2, cr3 = st.columns(3)
+                with cr1:
+                    r_frente_in = st.number_input("Resíduo Frente (R$)", value=float(res_frente), format="%.2f", step=1.0)
+                with cr2:
+                    r_cem_in = st.number_input("Resíduo 100 (R$)", value=float(res_cem), format="%.2f", step=1.0)
+                with cr3:
+                    r_fundos_in = st.number_input("Resíduo Fundos (R$)", value=float(res_fundos), format="%.2f", step=1.0)
                 
             submit_luz = st.form_submit_button("Salvar Ciclo da Luz", use_container_width=True)
             
@@ -880,6 +911,16 @@ elif menu == "Configuração de Ciclo":
                     novo_fim_str = fim_luz.strftime("%d/%m/%Y") if fim_luz else ""
                     novo_mes_ano, novo_ano = extrair_mes_ano_ciclo(novo_fim_str)
                     
+                    # Se estiver abrindo um NOVO ciclo (mudou o mês/ano), verifica se o ciclo que está fechando
+                    # ficou abaixo de R$ 50,00 em algum medidor para repassar o acúmulo automaticamente!
+                    novo_res_f = float(r_frente_in)
+                    novo_res_c = float(r_cem_in)
+                    novo_res_fu = float(r_fundos_in)
+                    if novo_mes_ano != mes_ano_luz:
+                        novo_res_f = float(rs_frente) if (0.0 < rs_frente < 50.0) else 0.0
+                        novo_res_c = float(rs_cem) if (0.0 < rs_cem < 50.0) else 0.0
+                        novo_res_fu = float(rs_fundos) if (0.0 < rs_fundos < 50.0) else 0.0
+
                     nova_aba_luz = obter_aba_luz(novo_mes_ano, novo_ano)
                     vals_nova_aba = nova_aba_luz.get_values()
                     if len(vals_nova_aba) <= 1 and not df_luz.empty:
@@ -906,13 +947,15 @@ elif menu == "Configuração de Ciclo":
                         "luz_kwh_frente": float(k_frente), "luz_kwh_cem": float(k_cem), "luz_kwh_fundos": float(k_fundos),
                         "luz_aplica_frente": bool(t_frente), "luz_aplica_cem": bool(t_cem), "luz_aplica_fundos": bool(t_fundos),
                         "luz_soc_frente": bool(s_frente), "luz_soc_cem": bool(s_cem), "luz_soc_fundos": bool(s_fundos),
+                        "luz_res_frente": novo_res_f, "luz_res_cem": novo_res_c, "luz_res_fundos": novo_res_fu,
                         f"{p_hist}luz_inicio": novo_ini_str,
                         f"{p_hist}luz_fim": novo_fim_str,
                         f"{p_hist}luz_pis": float(pis_luz), f"{p_hist}luz_icms": float(icms_luz),
                         f"{p_hist}luz_ilum": float(ilum_luz), f"{p_hist}luz_outros": float(outras_luz),
                         f"{p_hist}luz_kwh_frente": float(k_frente), f"{p_hist}luz_kwh_cem": float(k_cem), f"{p_hist}luz_kwh_fundos": float(k_fundos),
                         f"{p_hist}luz_aplica_frente": bool(t_frente), f"{p_hist}luz_aplica_cem": bool(t_cem), f"{p_hist}luz_aplica_fundos": bool(t_fundos),
-                        f"{p_hist}luz_soc_frente": bool(s_frente), f"{p_hist}luz_soc_cem": bool(s_cem), f"{p_hist}luz_soc_fundos": bool(s_fundos)
+                        f"{p_hist}luz_soc_frente": bool(s_frente), f"{p_hist}luz_soc_cem": bool(s_cem), f"{p_hist}luz_soc_fundos": bool(s_fundos),
+                        f"{p_hist}luz_res_frente": novo_res_f, f"{p_hist}luz_res_cem": novo_res_c, f"{p_hist}luz_res_fundos": novo_res_fu
                     })
                     st.session_state["msg_cfg"] = f"✅ Ciclo da Luz salvo e arquivado no Cofre Histórico ({novo_mes_ano})!"
                     st.rerun()
@@ -992,3 +1035,4 @@ elif menu == "Configuração de Ciclo":
                     st.rerun()
                 except Exception as e:
                     st.error(f"⚠️ Erro ao salvar configs: {e}")
+# === FIM DO CÓDIGO - VERSÃO 1.16 ===
