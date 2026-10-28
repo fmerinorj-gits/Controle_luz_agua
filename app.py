@@ -1,4 +1,4 @@
-# === APLICATIVO CONTROLE LUZ & ÁGUA - VERSÃO 1.17 ===
+# === APLICATIVO CONTROLE LUZ & ÁGUA - VERSÃO 1.18.1 ===
 import math
 import streamlit as st
 import streamlit.components.v1 as components
@@ -8,7 +8,7 @@ from decimal import Decimal, ROUND_HALF_UP
 import gspread
 from google.oauth2.service_account import Credentials
 
-VERSAO_APP = "1.17"
+VERSAO_APP = "1.18.1"
 
 st.set_page_config(
     page_title="Controle Luz & Água",
@@ -686,7 +686,7 @@ elif menu in ["Frente", "100", "Fundos"]:
 elif menu == "Água":
     st.markdown('<h2 style="margin-bottom: 0px;">💧 Água</h2>', unsafe_allow_html=True)
     st.caption(f"Guia ativa: {mes_ano_agua} Agua ({dias_decorridos_agua}/{dias_totais_agua} dias)")
-    st.metric("Leitura Consolidada", f"{ultima_agua:.3f} m³")
+    st.metric("Leitura", f"{ultima_agua:.3f} m³")
     
     meta_maxima_agua = 15.0
     saldo_meta = arredondar_excel(meta_maxima_agua - c_ciclo_agua, 3)
@@ -701,9 +701,10 @@ elif menu == "Água":
         st.metric("Projeção do Ciclo", f"{prev_agua:.3f} m³", delta_agua_str, delta_color="inverse")
         st.metric("Meta Máxima", f"{meta_maxima_agua:.3f} m³")
 
+    teto_hidrometro = ini_agua_int + int(meta_maxima_agua)
     st.caption(
         f"🔢 Leitura: Início **{ini_agua_int} m³** → Atual **{ultima_agua:.3f} m³** "
-        f"(Fechamento Inteiro: **{truncar_inteiro(ultima_agua)} m³**) | "
+        f"(Fechamento Inteiro: **{truncar_inteiro(ultima_agua)} m³** | Teto Meta: **{teto_hidrometro} m³**) | "
         f"💧 Consumo Última Leitura: **{c_hoje_agua:.3f} m³**"
     )
 
@@ -1080,4 +1081,4 @@ elif menu == "Configuração de Ciclo":
                             st.rerun()
                         except Exception as e:
                             st.error(f"⚠️ Erro ao atualizar Linha 2 da Água: {e}")
-# === FIM DO CÓDIGO - VERSÃO 1.17 ===
+# === FIM DO CÓDIGO - VERSÃO 1.18.1 ===
