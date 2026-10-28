@@ -1,4 +1,4 @@
-# === APLICATIVO CONTROLE LUZ & ÁGUA - VERSÃO 1.16 ===
+# === APLICATIVO CONTROLE LUZ & ÁGUA - VERSÃO 1.17 ===
 import math
 import streamlit as st
 import streamlit.components.v1 as components
@@ -8,7 +8,7 @@ from decimal import Decimal, ROUND_HALF_UP
 import gspread
 from google.oauth2.service_account import Credentials
 
-VERSAO_APP = "1.16"
+VERSAO_APP = "1.17"
 
 st.set_page_config(
     page_title="Controle Luz & Água",
@@ -84,6 +84,26 @@ def criar_aba_no_inicio(spreadsheet, titulo, linhas="100", colunas="10"):
     except TypeError:
         return spreadsheet.add_worksheet(title=titulo, rows=linhas, cols=colunas)
 
+def safe_float(val):
+    if pd.isna(val) or val is None or val == "":
+        return 0.0
+    if isinstance(val, (int, float)):
+        return float(val)
+    val_str = str(val).strip()
+    
+    if ',' in val_str:
+        if '.' in val_str:
+            val_str = val_str.replace('.', '')
+        val_str = val_str.replace(',', '.')
+        
+    try:
+        return float(val_str)
+    except Exception:
+        return 0.0
+
+def truncar_inteiro(val):
+    return int(math.floor(safe_float(val) + 1e-9))
+
 def obter_aba_luz(mes_ano_str, ano_str):
     spreadsheet = get_spreadsheet_por_ano(ano_str)
     titulo_aba = f"{mes_ano_str} Luz"
@@ -102,9 +122,9 @@ def obter_aba_luz(mes_ano_str, ano_str):
                         if idx_r == 0:
                             linhas_migrar.append([
                                 r[0],
-                                str(int(math.floor(safe_float(r[1])))),
-                                str(int(math.floor(safe_float(r[2])))),
-                                str(int(math.floor(safe_float(r[3]))))
+                                str(truncar_inteiro(r[1])),
+                                str(truncar_inteiro(r[2])),
+                                str(truncar_inteiro(r[3]))
                             ])
                         else:
                             linhas_migrar.append([r[0], r[1], r[2], r[3]])
@@ -127,34 +147,17 @@ def obter_aba_agua(mes_ano_str, ano_str):
             vals_antigos = aba_antiga.get_values()
             if len(vals_antigos) > 1:
                 linhas_migrar = []
-                for r in vals_antigos[1:]:
+                for idx_r, r in enumerate(vals_antigos[1:]):
                     if len(r) >= 5:
-                        linhas_migrar.append([r[0], r[4]])
+                        if idx_r == 0:
+                            linhas_migrar.append([r[0], str(truncar_inteiro(r[4]))])
+                        else:
+                            linhas_migrar.append([r[0], r[4]])
                 if linhas_migrar:
                     sheet.append_rows(linhas_migrar, value_input_option="USER_ENTERED")
         except Exception:
             pass
         return sheet
-
-def safe_float(val):
-    if pd.isna(val) or val is None or val == "":
-        return 0.0
-    if isinstance(val, (int, float)):
-        return float(val)
-    val_str = str(val).strip()
-    
-    if ',' in val_str:
-        if '.' in val_str:
-            val_str = val_str.replace('.', '')
-        val_str = val_str.replace(',', '.')
-        
-    try:
-        return float(val_str)
-    except Exception:
-        return 0.0
-
-def truncar_inteiro(val):
-    return int(math.floor(safe_float(val) + 1e-9))
 
 def calcular_leitura_absoluta(leitura_input, ultima_leitura_absoluta):
     if ultima_leitura_absoluta <= 0.0:
@@ -349,6 +352,16 @@ try:
     raw_agua = planilha_agua.get_values()
     if len(raw_agua) > 1:
         df_agua = pd.DataFrame(raw_agua[1:], columns=raw_agua[0])
+        # Auto-correção da Linha 2 da Água: garante que a abertura do ciclo na célula B2 seja sempre inteira
+        if not df_agua.empty and 'Agua' in df_agua.columns:
+            str_b2_atual = str(df_agua['Agua'].iloc[0]).strip()
+            int_b2_correto = truncar_inteiro(str_b2_atual)
+            if int_b2_correto > 0 and str_b2_atual != str(int_b2_correto):
+                try:
+                    planilha_agua.update(values=[[str(int_b2_correto)]], range_name="B2", value_input_option="USER_ENTERED")
+                    df_agua.at[0, 'Agua'] = str(int_b2_correto)
+                except Exception:
+                    pass
     else:
         df_agua = pd.DataFrame(columns=["Data", "Agua"])
 except Exception:
@@ -385,7 +398,7 @@ dias_totais_luz, dias_decorridos_luz = calcular_dias(luz_ini_cfg, luz_fim_cfg, u
 dias_totais_agua, dias_decorridos_agua = calcular_dias(agua_ini_cfg, agua_fim_cfg, ult_data_agua)
 
 ultima_frente = ultima_cem = ultima_fundos = ultima_agua = 0.0
-ini_frente_int = ini_cem_int = ini_fundos_int = 0
+ini_frente_int = ini_cem_int = ini_fundos_int = ini_agua_int = 0
 c_ciclo_frente = c_ciclo_cem = c_ciclo_fundos = c_ciclo_agua = 0.0
 c_hoje_frente = c_hoje_cem = c_hoje_fundos = c_hoje_agua = 0.0
 
@@ -422,8 +435,10 @@ if not df_luz.empty and len(df_luz) >= 1:
 
 if not df_agua.empty and len(df_agua) >= 1:
     df_agua['A_num'] = df_agua['Agua'].apply(safe_float)
+    # A abertura do ciclo da Água (Linha 2) também é sempre inteira (hidrômetro lê m³ inteiros no fechamento)
+    ini_agua_int = truncar_inteiro(df_agua['A_num'].iloc[0])
     ultima_agua = df_agua['A_num'].iloc[-1]
-    c_ciclo_agua = round(ultima_agua - df_agua['A_num'].iloc[0], 3)
+    c_ciclo_agua = round(ultima_agua - ini_agua_int, 3)
     if len(df_agua) >= 2:
         c_hoje_agua = round(ultima_agua - df_agua['A_num'].iloc[-2], 3)
     else:
@@ -584,6 +599,7 @@ if menu == "Registro Diário":
                 
                 # Se a data editada for a Linha 2 (abertura do ciclo), salva como inteiro
                 eh_linha_abertura_luz = (not df_luz.empty and df_luz['Data'].iloc[0] == data_str)
+                eh_linha_abertura_agua = (not df_agua.empty and df_agua['Data'].iloc[0] == data_str)
                 linha_luz = [
                     data_str, 
                     formatar_para_planilha(f_abs, inteiro=eh_linha_abertura_luz), 
@@ -592,7 +608,7 @@ if menu == "Registro Diário":
                 ]
                 linha_agua = [
                     data_str,
-                    formatar_para_planilha(a_abs, eh_agua=True)
+                    formatar_para_planilha(a_abs, eh_agua=True, inteiro=eh_linha_abertura_agua)
                 ]
                 
                 alertas = []
@@ -685,6 +701,12 @@ elif menu == "Água":
         st.metric("Projeção do Ciclo", f"{prev_agua:.3f} m³", delta_agua_str, delta_color="inverse")
         st.metric("Meta Máxima", f"{meta_maxima_agua:.3f} m³")
 
+    st.caption(
+        f"🔢 Leitura: Início **{ini_agua_int} m³** → Atual **{ultima_agua:.3f} m³** "
+        f"(Fechamento Inteiro: **{truncar_inteiro(ultima_agua)} m³**) | "
+        f"💧 Consumo Última Leitura: **{c_hoje_agua:.3f} m³**"
+    )
+
 elif menu == "Resumo dos Ciclos":
     st.markdown('<h2 style="margin-bottom: 0px;">📊 Resumo dos Ciclos</h2>', unsafe_allow_html=True)
     
@@ -750,7 +772,7 @@ elif menu == "Resumo dos Ciclos":
         h_agua_ini = obter_cfg_ciclo(config_dict, ciclo_sel, 'agua_inicio', agua_ini_cfg, usar_ativo=False)
         h_agua_fim = obter_cfg_ciclo(config_dict, ciclo_sel, 'agua_fim', agua_fim_cfg, usar_ativo=False)
 
-        hc_f = hc_c = hc_fu = hc_a = 0.0
+        hc_f = hc_c = hc_fu = hc_a = hc_a_int = 0.0
         h_ult_luz = None
         h_ult_agua = None
         df_hl = pd.DataFrame()
@@ -772,7 +794,11 @@ elif menu == "Resumo dos Ciclos":
             vals_ha = aba_h_agua.get_values()
             if len(vals_ha) > 1:
                 df_ha = pd.DataFrame(vals_ha[1:], columns=vals_ha[0])
-                hc_a = round(safe_float(df_ha['Agua'].iloc[-1]) - safe_float(df_ha['Agua'].iloc[0]), 3)
+                ini_ha_int = truncar_inteiro(df_ha['Agua'].iloc[0])
+                ult_ha_real = safe_float(df_ha['Agua'].iloc[-1])
+                ult_ha_int = truncar_inteiro(ult_ha_real)
+                hc_a = round(ult_ha_real - ini_ha_int, 3)
+                hc_a_int = float(ult_ha_int - ini_ha_int)
                 if len(df_ha) >= 2 and 'Data' in df_ha.columns:
                     h_ult_agua = df_ha['Data'].iloc[-1]
         except Exception:
@@ -808,7 +834,7 @@ elif menu == "Resumo dos Ciclos":
         hp_f, _, _, _ = calcular_projecao_luz_inteligente(df_hl, 'Frente', h_dias_tot_luz, h_dias_dec_luz)
         hp_c, _, _, _ = calcular_projecao_luz_inteligente(df_hl, '100', h_dias_tot_luz, h_dias_dec_luz)
         hp_fu, _, _, _ = calcular_projecao_luz_inteligente(df_hl, 'Fundos', h_dias_tot_luz, h_dias_dec_luz)
-        hp_a = arredondar_excel((hc_a / h_dias_dec_agua) * h_dias_tot_agua, 3) if h_dias_dec_agua > 0 else 0.0
+        hp_a = hc_a_int if h_dias_dec_agua >= h_dias_tot_agua else (arredondar_excel((hc_a / h_dias_dec_agua) * h_dias_tot_agua, 3) if h_dias_dec_agua > 0 else 0.0)
 
         hrs_f = calcular_valor_fatura(hp_f, h_kwh_f, h_taxas, h_ap_f, h_soc_f, h_res_f)
         hrs_c = calcular_valor_fatura(hp_c, h_kwh_c, h_taxas, h_ap_c, h_soc_c, h_res_c)
@@ -828,7 +854,7 @@ elif menu == "Resumo dos Ciclos":
         | **100** | {hc_c:.0f} kWh | {hp_c:.0f} kWh | R$ {hrs_c:.2f}{htag_c} |
         | **Fundos** | {hc_fu:.0f} kWh | {hp_fu:.0f} kWh | R$ {hrs_fu:.2f}{htag_fu} |
         | **100 + Fundos** | **{hc_c + hc_fu:.0f} kWh** | **{hp_c + hp_fu:.0f} kWh** | **R$ {hrs_c + hrs_fu:.2f}** |
-        | **Água** | {hc_a:.3f} m³ | {hp_a:.3f} m³ | - |
+        | **Água** | {hc_a_int:.0f} m³ *(Lido: {hc_a:.3f})* | {hp_a:.0f} m³ | - |
         """)
 
 elif menu == "Configuração de Ciclo":
@@ -1019,9 +1045,10 @@ elif menu == "Configuração de Ciclo":
                         else:
                             r_base_a = df_agua.iloc[-1]
                         data_linha2_a = novo_ini_a_str if novo_ini_a_str else r_base_a['Data']
+                        # Abre o novo ciclo da Água sempre em número INTEIRO (os litros/milésimos vão para o próximo ciclo)
                         nova_aba_agua.append_row([
                             data_linha2_a,
-                            formatar_para_planilha(safe_float(r_base_a['Agua']), eh_agua=True)
+                            formatar_para_planilha(safe_float(r_base_a['Agua']), eh_agua=True, inteiro=True)
                         ], value_input_option="USER_ENTERED")
 
                     p_hist_a = f"hist_{novo_mes_ano_a}_"
@@ -1035,4 +1062,22 @@ elif menu == "Configuração de Ciclo":
                     st.rerun()
                 except Exception as e:
                     st.error(f"⚠️ Erro ao salvar configs: {e}")
-# === FIM DO CÓDIGO - VERSÃO 1.16 ===
+
+        if not df_agua.empty:
+            with st.expander("🔢 Conferir / Ajustar Leitura Inicial Inteira da Água (Linha 2)"):
+                st.caption(f"Leitura inicial inteira gravada na Linha 2 da guia **{mes_ano_agua} Agua** (Data: {df_agua['Data'].iloc[0]}):")
+                with st.form("form_ajuste_linha2_agua"):
+                    l2_a = st.number_input("Água Inicial Inteira (m³)", value=int(ini_agua_int), step=1)
+                    if st.form_submit_button("Atualizar Linha 2 da Água (Inteira)", use_container_width=True):
+                        try:
+                            dt_l2_a = df_agua['Data'].iloc[0]
+                            planilha_agua.update(
+                                values=[[dt_l2_a, str(int(l2_a))]],
+                                range_name="A2:B2",
+                                value_input_option="USER_ENTERED"
+                            )
+                            st.session_state["msg_cfg"] = f"✅ Leitura inicial inteira atualizada na guia {mes_ano_agua} Agua!"
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"⚠️ Erro ao atualizar Linha 2 da Água: {e}")
+# === FIM DO CÓDIGO - VERSÃO 1.17 ===
