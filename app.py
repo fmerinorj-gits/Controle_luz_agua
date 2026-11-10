@@ -1,4 +1,4 @@
-# === APLICATIVO CONTROLE LUZ & ÁGUA - VERSÃO 1.18.1 ===
+# === APLICATIVO CONTROLE LUZ & ÁGUA - VERSÃO 1.18.2 ===
 import math
 import streamlit as st
 import streamlit.components.v1 as components
@@ -8,7 +8,8 @@ from decimal import Decimal, ROUND_HALF_UP
 import gspread
 from google.oauth2.service_account import Credentials
 
-VERSAO_APP = "1.18.1"
+VERSAO_APP = "1.18.2"
+LIMITE_RELOGIO = 100000.0  # Virada total após 99999,99 -> 00000,00
 
 st.set_page_config(
     page_title="Controle Luz & Água",
@@ -104,6 +105,25 @@ def safe_float(val):
 def truncar_inteiro(val):
     return int(math.floor(safe_float(val) + 1e-9))
 
+def calcular_consumo_com_virada(leitura_atual, leitura_anterior, casas=3):
+    """
+    Calcula o consumo (atual - anterior) protegendo contra a grande virada do relógio
+    (ex: quando passa de 99999 para 00000, ou de 9999 para 0000).
+    """
+    atual = float(leitura_atual)
+    anterior = float(leitura_anterior)
+    diff = atual - anterior
+    if diff < 0:
+        if anterior >= 90000.0:
+            diff += LIMITE_RELOGIO
+        elif anterior >= 9000.0:
+            diff += 10000.0
+        elif anterior >= 900.0:
+            diff += 1000.0
+        else:
+            diff += 100.0
+    return round(max(0.0, diff), casas)
+
 def obter_aba_luz(mes_ano_str, ano_str):
     spreadsheet = get_spreadsheet_por_ano(ano_str)
     titulo_aba = f"{mes_ano_str} Luz"
@@ -159,18 +179,22 @@ def obter_aba_agua(mes_ano_str, ano_str):
             pass
         return sheet
 
-def calcular_leitura_absoluta(leitura_input, ultima_leitura_absoluta):
-    if ultima_leitura_absoluta <= 0.0:
+def calcular_leitura_absoluta(leitura_input, ultima_leitura_absoluta, ja_tem_historico=False):
+    if ultima_leitura_absoluta <= 0.0 and not ja_tem_historico:
         return round(float(leitura_input), 3)
     
     if leitura_input >= 100.0:
-        return round(float(leitura_input), 3)
+        return round(float(leitura_input) % LIMITE_RELOGIO, 3)
     
     base = int(round(ultima_leitura_absoluta, 3) // 100) * 100
     resto = round(ultima_leitura_absoluta % 100, 3)
     
     if round(float(leitura_input), 3) < resto:
         base += 100
+        
+    # Se o relógio físico passar de 99999,99, ele zera para 00000,00
+    if base >= int(LIMITE_RELOGIO):
+        base = base % int(LIMITE_RELOGIO)
         
     return round(float(base + leitura_input), 3)
 
@@ -239,6 +263,7 @@ def calcular_projecao_luz_inteligente(df_dados, col_nome, dias_totais, dias_deco
     """
     Calcula a projeção de fechamento da Luz:
     - Abre e fecha o ciclo em número inteiro (padrão faturamento Light).
+    - Suporta virada geral do relógio (99999 -> 00000).
     - Para os dias restantes, pondera 60% o ritmo recente (últimos ~6 dias) + 40% a média geral do ciclo.
     Retorna: (projecao_hibrida, projecao_media_geral, media_geral_dia, media_recente_dia)
     """
@@ -253,11 +278,11 @@ def calcular_projecao_luz_inteligente(df_dados, col_nome, dias_totais, dias_deco
 
     # Se o ciclo já chegou ao fim, o fechamento é o consumo inteiro exato da conta (fração vai para o próximo ciclo)
     if dias_restantes == 0:
-        fechamento_int = max(0.0, leitura_ult_int - leitura_ini_int)
+        fechamento_int = calcular_consumo_com_virada(leitura_ult_int, leitura_ini_int, casas=0)
         media_g = fechamento_int / dias_totais if dias_totais > 0 else 0.0
         return fechamento_int, fechamento_int, media_g, media_g
 
-    consumo_acumulado = max(0.0, leitura_ult_real - leitura_ini_int)
+    consumo_acumulado = calcular_consumo_com_virada(leitura_ult_real, leitura_ini_int, casas=2)
     media_geral = consumo_acumulado / dias_decorridos
     proj_linear = (consumo_acumulado / dias_decorridos) * dias_totais
 
@@ -280,7 +305,7 @@ def calcular_projecao_luz_inteligente(df_dados, col_nome, dias_totais, dias_deco
                 candidatos['dist'] = (candidatos['Dt'] - dt_alvo).abs()
                 ancora = candidatos.sort_values('dist').iloc[0]
                 dias_jan = (dt_ult - ancora['Dt']).days
-                cons_jan = val_ult - ancora['Val']
+                cons_jan = calcular_consumo_com_virada(val_ult, ancora['Val'], casas=2)
                 if dias_jan >= 1 and cons_jan >= 0:
                     media_recente = cons_jan / dias_jan
     except Exception:
@@ -356,7 +381,7 @@ try:
         if not df_agua.empty and 'Agua' in df_agua.columns:
             str_b2_atual = str(df_agua['Agua'].iloc[0]).strip()
             int_b2_correto = truncar_inteiro(str_b2_atual)
-            if int_b2_correto > 0 and str_b2_atual != str(int_b2_correto):
+            if str_b2_atual != "" and int_b2_correto >= 0 and str_b2_atual != str(int_b2_correto):
                 try:
                     planilha_agua.update(values=[[str(int_b2_correto)]], range_name="B2", value_input_option="USER_ENTERED")
                     df_agua.at[0, 'Agua'] = str(int_b2_correto)
@@ -418,18 +443,18 @@ if not df_luz.empty and len(df_luz) >= 1:
     
     # Se o ciclo já fechou (dias_decorridos == dias_totais), exibe o consumo inteiro fechado da conta
     if dias_decorridos_luz >= dias_totais_luz:
-        c_ciclo_frente = float(truncar_inteiro(ultima_frente) - ini_frente_int)
-        c_ciclo_cem = float(truncar_inteiro(ultima_cem) - ini_cem_int)
-        c_ciclo_fundos = float(truncar_inteiro(ultima_fundos) - ini_fundos_int)
+        c_ciclo_frente = calcular_consumo_com_virada(truncar_inteiro(ultima_frente), ini_frente_int, casas=0)
+        c_ciclo_cem = calcular_consumo_com_virada(truncar_inteiro(ultima_cem), ini_cem_int, casas=0)
+        c_ciclo_fundos = calcular_consumo_com_virada(truncar_inteiro(ultima_fundos), ini_fundos_int, casas=0)
     else:
-        c_ciclo_frente = round(ultima_frente - ini_frente_int, 2)
-        c_ciclo_cem = round(ultima_cem - ini_cem_int, 2)
-        c_ciclo_fundos = round(ultima_fundos - ini_fundos_int, 2)
+        c_ciclo_frente = calcular_consumo_com_virada(ultima_frente, ini_frente_int, casas=2)
+        c_ciclo_cem = calcular_consumo_com_virada(ultima_cem, ini_cem_int, casas=2)
+        c_ciclo_fundos = calcular_consumo_com_virada(ultima_fundos, ini_fundos_int, casas=2)
     
     if len(df_luz) >= 2:
-        c_hoje_frente = round(ultima_frente - df_luz['F_num'].iloc[-2], 2)
-        c_hoje_cem = round(ultima_cem - df_luz['C_num'].iloc[-2], 2)
-        c_hoje_fundos = round(ultima_fundos - df_luz['Fu_num'].iloc[-2], 2)
+        c_hoje_frente = calcular_consumo_com_virada(ultima_frente, df_luz['F_num'].iloc[-2], casas=2)
+        c_hoje_cem = calcular_consumo_com_virada(ultima_cem, df_luz['C_num'].iloc[-2], casas=2)
+        c_hoje_fundos = calcular_consumo_com_virada(ultima_fundos, df_luz['Fu_num'].iloc[-2], casas=2)
     else:
         c_hoje_frente, c_hoje_cem, c_hoje_fundos = c_ciclo_frente, c_ciclo_cem, c_ciclo_fundos
 
@@ -438,9 +463,9 @@ if not df_agua.empty and len(df_agua) >= 1:
     # A abertura do ciclo da Água (Linha 2) também é sempre inteira (hidrômetro lê m³ inteiros no fechamento)
     ini_agua_int = truncar_inteiro(df_agua['A_num'].iloc[0])
     ultima_agua = df_agua['A_num'].iloc[-1]
-    c_ciclo_agua = round(ultima_agua - ini_agua_int, 3)
+    c_ciclo_agua = calcular_consumo_com_virada(ultima_agua, ini_agua_int, casas=3)
     if len(df_agua) >= 2:
-        c_hoje_agua = round(ultima_agua - df_agua['A_num'].iloc[-2], 3)
+        c_hoje_agua = calcular_consumo_com_virada(ultima_agua, df_agua['A_num'].iloc[-2], casas=3)
     else:
         c_hoje_agua = c_ciclo_agua
 
@@ -528,6 +553,8 @@ if menu == "Registro Diário":
     c_ant_base = ultima_cem
     fu_ant_base = ultima_fundos
     a_ant_base = ultima_agua
+    tem_hist_luz = not df_luz.empty
+    tem_hist_agua = not df_agua.empty
 
     if not df_luz.empty and 'Data' in df_luz.columns:
         df_temp_luz = df_luz.copy()
@@ -563,10 +590,10 @@ if menu == "Registro Diário":
             except Exception:
                 pass
 
-    txt_ant_f = f" (Anterior: {f_ant_base % 100:05.2f})" if f_ant_base > 0 else ""
-    txt_ant_c = f" (Anterior: {c_ant_base % 100:05.2f})" if c_ant_base > 0 else ""
-    txt_ant_fu = f" (Anterior: {fu_ant_base % 100:05.2f})" if fu_ant_base > 0 else ""
-    txt_ant_a = f" (Anterior: {a_ant_base % 100:06.3f})" if a_ant_base > 0 else ""
+    txt_ant_f = f" (Anterior: {f_ant_base % 100:05.2f})" if tem_hist_luz else ""
+    txt_ant_c = f" (Anterior: {c_ant_base % 100:05.2f})" if tem_hist_luz else ""
+    txt_ant_fu = f" (Anterior: {fu_ant_base % 100:05.2f})" if tem_hist_luz else ""
+    txt_ant_a = f" (Anterior: {a_ant_base % 100:06.3f})" if tem_hist_agua else ""
 
     with st.form("form_leituras", clear_on_submit=False):
         st.markdown('<h3>Entradas:</h3>', unsafe_allow_html=True)
@@ -592,10 +619,10 @@ if menu == "Registro Diário":
             st.warning("⚠️ Por favor, preencha todos os campos antes de salvar.")
         else:
             try:
-                f_abs = calcular_leitura_absoluta(frente_val, f_ant_base)
-                c_abs = calcular_leitura_absoluta(cem_val, c_ant_base)
-                fu_abs = calcular_leitura_absoluta(fundos_val, fu_ant_base)
-                a_abs = calcular_leitura_absoluta(agua_input, a_ant_base)
+                f_abs = calcular_leitura_absoluta(frente_val, f_ant_base, ja_tem_historico=tem_hist_luz)
+                c_abs = calcular_leitura_absoluta(cem_val, c_ant_base, ja_tem_historico=tem_hist_luz)
+                fu_abs = calcular_leitura_absoluta(fundos_val, fu_ant_base, ja_tem_historico=tem_hist_luz)
+                a_abs = calcular_leitura_absoluta(agua_input, a_ant_base, ja_tem_historico=tem_hist_agua)
                 
                 # Se a data editada for a Linha 2 (abertura do ciclo), salva como inteiro
                 eh_linha_abertura_luz = (not df_luz.empty and df_luz['Data'].iloc[0] == data_str)
@@ -612,14 +639,19 @@ if menu == "Registro Diário":
                 ]
                 
                 alertas = []
-                if f_ant_base > 0 and (f_abs - f_ant_base) > 25.0:
-                    alertas.append(f"Frente subiu {f_abs - f_ant_base:.1f} kWh ({f_ant_base:.1f} → {f_abs:.1f})")
-                if c_ant_base > 0 and (c_abs - c_ant_base) > 25.0:
-                    alertas.append(f"100 subiu {c_abs - c_ant_base:.1f} kWh ({c_ant_base:.1f} → {c_abs:.1f})")
-                if fu_ant_base > 0 and (fu_abs - fu_ant_base) > 25.0:
-                    alertas.append(f"Fundos subiu {fu_abs - fu_ant_base:.1f} kWh ({fu_ant_base:.1f} → {fu_abs:.1f})")
-                if a_ant_base > 0 and (a_abs - a_ant_base) > 5.0:
-                    alertas.append(f"Água subiu {a_abs - a_ant_base:.3f} m³ ({a_ant_base:.3f} → {a_abs:.3f})")
+                salto_f = calcular_consumo_com_virada(f_abs, f_ant_base, casas=2)
+                salto_c = calcular_consumo_com_virada(c_abs, c_ant_base, casas=2)
+                salto_fu = calcular_consumo_com_virada(fu_abs, fu_ant_base, casas=2)
+                salto_a = calcular_consumo_com_virada(a_abs, a_ant_base, casas=3)
+
+                if tem_hist_luz and salto_f > 25.0:
+                    alertas.append(f"Frente subiu {salto_f:.1f} kWh ({f_ant_base:.1f} → {f_abs:.1f})")
+                if tem_hist_luz and salto_c > 25.0:
+                    alertas.append(f"100 subiu {salto_c:.1f} kWh ({c_ant_base:.1f} → {c_abs:.1f})")
+                if tem_hist_luz and salto_fu > 25.0:
+                    alertas.append(f"Fundos subiu {salto_fu:.1f} kWh ({fu_ant_base:.1f} → {fu_abs:.1f})")
+                if tem_hist_agua and salto_a > 5.0:
+                    alertas.append(f"Água subiu {salto_a:.3f} m³ ({a_ant_base:.3f} → {a_abs:.3f})")
 
                 if alertas:
                     st.session_state["msg_alerta"] = "⚠️ Consumo atípico detectado (verifique se houve erro de digitação): " + " | ".join(alertas)
@@ -701,7 +733,7 @@ elif menu == "Água":
         st.metric("Projeção do Ciclo", f"{prev_agua:.3f} m³", delta_agua_str, delta_color="inverse")
         st.metric("Meta Máxima", f"{meta_maxima_agua:.3f} m³")
 
-    teto_hidrometro = ini_agua_int + int(meta_maxima_agua)
+    teto_hidrometro = int((ini_agua_int + int(meta_maxima_agua)) % int(LIMITE_RELOGIO))
     st.caption(
         f"🔢 Leitura: Início **{ini_agua_int} m³** → Atual **{ultima_agua:.3f} m³** "
         f"(Fechamento Inteiro: **{truncar_inteiro(ultima_agua)} m³** | Teto Meta: **{teto_hidrometro} m³**) | "
@@ -782,9 +814,9 @@ elif menu == "Resumo dos Ciclos":
             vals_hl = aba_h_luz.get_values()
             if len(vals_hl) > 1:
                 df_hl = pd.DataFrame(vals_hl[1:], columns=vals_hl[0])
-                hc_f = float(truncar_inteiro(df_hl['Frente'].iloc[-1]) - truncar_inteiro(df_hl['Frente'].iloc[0]))
-                hc_c = float(truncar_inteiro(df_hl['100'].iloc[-1]) - truncar_inteiro(df_hl['100'].iloc[0]))
-                hc_fu = float(truncar_inteiro(df_hl['Fundos'].iloc[-1]) - truncar_inteiro(df_hl['Fundos'].iloc[0]))
+                hc_f = calcular_consumo_com_virada(truncar_inteiro(df_hl['Frente'].iloc[-1]), truncar_inteiro(df_hl['Frente'].iloc[0]), casas=0)
+                hc_c = calcular_consumo_com_virada(truncar_inteiro(df_hl['100'].iloc[-1]), truncar_inteiro(df_hl['100'].iloc[0]), casas=0)
+                hc_fu = calcular_consumo_com_virada(truncar_inteiro(df_hl['Fundos'].iloc[-1]), truncar_inteiro(df_hl['Fundos'].iloc[0]), casas=0)
                 if len(df_hl) >= 2 and 'Data' in df_hl.columns:
                     h_ult_luz = df_hl['Data'].iloc[-1]
         except Exception:
@@ -798,8 +830,8 @@ elif menu == "Resumo dos Ciclos":
                 ini_ha_int = truncar_inteiro(df_ha['Agua'].iloc[0])
                 ult_ha_real = safe_float(df_ha['Agua'].iloc[-1])
                 ult_ha_int = truncar_inteiro(ult_ha_real)
-                hc_a = round(ult_ha_real - ini_ha_int, 3)
-                hc_a_int = float(ult_ha_int - ini_ha_int)
+                hc_a = calcular_consumo_com_virada(ult_ha_real, ini_ha_int, casas=3)
+                hc_a_int = calcular_consumo_com_virada(ult_ha_int, ini_ha_int, casas=0)
                 if len(df_ha) >= 2 and 'Data' in df_ha.columns:
                     h_ult_agua = df_ha['Data'].iloc[-1]
         except Exception:
@@ -1081,4 +1113,4 @@ elif menu == "Configuração de Ciclo":
                             st.rerun()
                         except Exception as e:
                             st.error(f"⚠️ Erro ao atualizar Linha 2 da Água: {e}")
-# === FIM DO CÓDIGO - VERSÃO 1.18.1 ===
+# === FIM DO CÓDIGO - VERSÃO 1.18.2 ===
